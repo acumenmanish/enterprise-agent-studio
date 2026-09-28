@@ -5,6 +5,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.services.scheduling import (
     SchedulingInputError,
+    apply_scheduling_constraints,
     load_demo_data,
     optimize_schedule,
 )
@@ -20,6 +21,7 @@ class ScheduleWorkflowState(TypedDict, total=False):
     orders: list[dict[str, Any]]
     machines: list[dict[str, Any]]
     materials: list[dict[str, Any]]
+    policy_constraints: dict[str, Any]
     result: dict[str, Any]
     outcome_checked: bool
     approval_required: bool
@@ -61,7 +63,7 @@ def build_schedule_workflow(
         node_type = node["type"]
         type_counts[node_type] = type_counts.get(node_type, 0) + 1
 
-    required = {"request", "context", "optimizer", "outcome-check", "approval"}
+    required = {"request", "context", "policy", "optimizer", "outcome-check", "approval"}
     missing = required - set(type_counts)
     if missing:
         raise WorkflowExecutionError(
@@ -123,10 +125,20 @@ def build_schedule_workflow(
             return lambda state: {}
         if node_type == "context":
             return lambda state: {"data": load_demo_data(demo_data_path)}
+        if node_type == "policy":
+            return lambda state: {
+                "policy_constraints": state.get(
+                    "policy_constraints", {"machine_blackouts": [], "material_limits": {}}
+                )
+            }
         if node_type == "optimizer":
 
             def optimize(state: ScheduleWorkflowState) -> dict[str, Any]:
-                data = dict(state["data"])
+                data = apply_scheduling_constraints(
+                    state["data"],
+                    state.get("policy_constraints", {}),
+                    state["request"]["planning_horizon_days"],
+                )
                 if "orders" in state:
                     data["orders"] = state["orders"]
                 if "machines" in state:

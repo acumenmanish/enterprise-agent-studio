@@ -122,6 +122,19 @@ execution_graph:
         required:
           - schedule
           - validation
+    - id: approved_business_policy
+      type: policy
+      inputs:
+        type: object
+        properties: {}
+        required: []
+      outputs:
+        type: object
+        properties:
+          policy_constraints:
+            type: object
+        required:
+          - policy_constraints
     - id: outcome_check
       type: outcome-check
       inputs:
@@ -161,6 +174,8 @@ execution_graph:
     - from: schedule_request
       to: cp_sat_optimizer
     - from: local_printing_context
+      to: cp_sat_optimizer
+    - from: approved_business_policy
       to: cp_sat_optimizer
     - from: cp_sat_optimizer
       to: outcome_check

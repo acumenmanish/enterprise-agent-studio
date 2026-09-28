@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SCHEDULING_TOOLS = {
     "get_open_orders@1.0.0",
@@ -31,6 +31,42 @@ class KnowledgeDocumentUpload(BaseModel):
     content_base64: str = Field(min_length=1, max_length=3_000_000)
 
 
+class MachineBlackout(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    machine_id: str = Field(min_length=1, max_length=100)
+    day: int = Field(ge=0, le=4)
+
+
+class SchedulingConstraints(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    machine_blackouts: list[MachineBlackout] = Field(default_factory=list, max_length=50)
+    material_limits: dict[str, int] = Field(default_factory=dict, max_length=50)
+
+    @field_validator("material_limits")
+    @classmethod
+    def validate_material_limits(cls, limits: dict[str, int]) -> dict[str, int]:
+        if any(quantity < 0 for quantity in limits.values()):
+            raise ValueError("Material limits cannot be negative")
+        return limits
+
+
+class PolicyDraftRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1_000_000)
+
+
+class ScenarioTestCase(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    objective: Literal["balanced", "due_date", "changeover"] = "balanced"
+    planning_horizon_days: int = Field(default=5, ge=1, le=5)
+    constraints: SchedulingConstraints = Field(default_factory=SchedulingConstraints)
+
+
+class ScenarioTestRequest(BaseModel):
+    cases: list[ScenarioTestCase] = Field(min_length=1, max_length=20)
+
+
 class AgentConfigurationUpdate(BaseModel):
     base_version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
     domain: Literal["printing"] = "printing"
@@ -41,6 +77,7 @@ class AgentConfigurationUpdate(BaseModel):
     enabled_tools: list[str] = Field(default_factory=list, max_length=20)
     scenarios: list[str] = Field(default_factory=list, max_length=50)
     documents: list[KnowledgeDocument] = Field(default_factory=list, max_length=10)
+    approved_constraints: SchedulingConstraints = Field(default_factory=SchedulingConstraints)
 
     @field_validator("enabled_tools")
     @classmethod

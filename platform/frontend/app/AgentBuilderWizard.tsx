@@ -45,6 +45,46 @@ export type BuilderERPStatus = {
 };
 
 export type BuilderDocument = { name: string; text: string };
+export type BuilderSchedulingConstraints = {
+  machine_blackouts: { machine_id: string; day: number }[];
+  material_limits: Record<string, number>;
+};
+
+function parseSchedulingConstraints(value: unknown): BuilderSchedulingConstraints {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("Constraints must be a JSON object.");
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    !Array.isArray(candidate.machine_blackouts) ||
+    !candidate.machine_blackouts.every(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        "machine_id" in entry &&
+        typeof entry.machine_id === "string" &&
+        "day" in entry &&
+        Number.isInteger(entry.day) &&
+        entry.day >= 0 &&
+        entry.day <= 4,
+    ) ||
+    typeof candidate.material_limits !== "object" ||
+    candidate.material_limits === null ||
+    Array.isArray(candidate.material_limits) ||
+    !Object.values(candidate.material_limits).every(
+      (quantity) => Number.isInteger(quantity) && quantity >= 0,
+    )
+  ) {
+    throw new Error("Expected valid machine_blackouts and material_limits values.");
+  }
+  return {
+    machine_blackouts: candidate.machine_blackouts.map((entry) => ({
+      machine_id: entry.machine_id,
+      day: entry.day,
+    })),
+    material_limits: candidate.material_limits as Record<string, number>,
+  };
+}
 export type BuilderConfiguration = {
   base_version: string;
   domain: string;
@@ -55,6 +95,7 @@ export type BuilderConfiguration = {
   enabled_tools: string[];
   scenarios: string[];
   documents: BuilderDocument[];
+  approved_constraints: BuilderSchedulingConstraints;
   model_key_override_configured: boolean;
   model_key_override_can_be_saved: boolean;
 };
@@ -142,6 +183,13 @@ export default function AgentBuilderWizard({
   const [businessRules, setBusinessRules] = useState("");
   const [scenariosText, setScenariosText] = useState("");
   const [documents, setDocuments] = useState<BuilderDocument[]>([]);
+  const [approvedConstraints, setApprovedConstraints] =
+    useState<BuilderSchedulingConstraints>({
+      machine_blackouts: [],
+      material_limits: {},
+    });
+  const [policyDraft, setPolicyDraft] = useState<string | null>(null);
+  const [draftingPolicy, setDraftingPolicy] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [erpEndpoint, setERPEndpoint] = useState("");
   const [erpToken, setERPToken] = useState("");
@@ -160,6 +208,7 @@ export default function AgentBuilderWizard({
     setBusinessRules(configuration.business_rules);
     setScenariosText(configuration.scenarios.join("\n"));
     setDocuments(configuration.documents);
+    setApprovedConstraints(configuration.approved_constraints);
     setDomain(configuration.domain);
     setSubdomain(configuration.subdomain);
     setEnabledTools(configuration.enabled_tools);
@@ -195,6 +244,7 @@ export default function AgentBuilderWizard({
             .map((scenario) => scenario.trim())
             .filter(Boolean),
           documents,
+          approved_constraints: approvedConstraints,
         }),
       });
       setDraft((current) =>
@@ -210,6 +260,50 @@ export default function AgentBuilderWizard({
       return false;
     } finally {
       setSaving(false);
+    }
+  };
+
+  const draftPolicyConstraints = async () => {
+    const text = [
+      businessRules,
+      ...documents.map((document) => `Document: ${document.name}\n${document.text}`),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    if (!text.trim()) {
+      messageApi.error("Add business rules or upload a policy document first.");
+      return;
+    }
+    setDraftingPolicy(true);
+    try {
+      const response = await api<{
+        constraints: BuilderSchedulingConstraints;
+        requires_user_approval: boolean;
+        applied: boolean;
+      }>("/agent/policy/draft", {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      });
+      setPolicyDraft(JSON.stringify(response.constraints, null, 2));
+      messageApi.info("Review the proposed constraints before approving them.");
+    } catch (cause) {
+      messageApi.error(
+        cause instanceof Error ? cause.message : "Could not draft policy constraints",
+      );
+    } finally {
+      setDraftingPolicy(false);
+    }
+  };
+
+  const approvePolicyDraft = () => {
+    if (!policyDraft) return;
+    try {
+      const parsed: unknown = JSON.parse(policyDraft);
+      setApprovedConstraints(parseSchedulingConstraints(parsed));
+      setPolicyDraft(null);
+      messageApi.success("Policy constraints approved. Save the agent to apply them.");
+    } catch (cause) {
+      messageApi.error(cause instanceof Error ? cause.message : "Invalid constraint JSON");
     }
   };
 
@@ -585,7 +679,7 @@ export default function AgentBuilderWizard({
               />
             </div>
             <div>
-              <Text strong>Scenario examples (one per line)</Text>
+              <Text strong>Scenario examples (reference cases; test them in Evaluation Suite)</Text>
               <Input.TextArea
                 rows={3}
                 maxLength={20_000}
@@ -642,6 +736,47 @@ export default function AgentBuilderWizard({
                 />
               )}
             </div>
+            <Card
+              size="small"
+              title="Review optimizer constraints extracted from policy"
+              extra={
+                <Button loading={draftingPolicy} onClick={() => void draftPolicyConstraints()}>
+                  Draft constraints
+                </Button>
+              }
+            >
+              <Paragraph type="secondary">
+                The model can propose machine blackouts and material limits. Nothing
+                changes the optimizer until you review and approve the structured
+                draft. Ambiguous or unsupported statements remain context only.
+              </Paragraph>
+              {policyDraft !== null && (
+                <Space direction="vertical" style={{ display: "flex" }}>
+                  <Input.TextArea
+                    rows={6}
+                    aria-label="Review extracted scheduling constraints"
+                    value={policyDraft}
+                    onChange={(event) => setPolicyDraft(event.target.value)}
+                  />
+                  <Space>
+                    <Button type="primary" onClick={approvePolicyDraft}>
+                      Approve constraints
+                    </Button>
+                    <Button onClick={() => setPolicyDraft(null)}>Discard draft</Button>
+                  </Space>
+                </Space>
+              )}
+              {(approvedConstraints.machine_blackouts.length > 0 ||
+                Object.keys(approvedConstraints.material_limits).length > 0) && (
+                <Alert
+                  type="success"
+                  showIcon
+                  message="Approved optimizer constraints"
+                  description={JSON.stringify(approvedConstraints)}
+                  style={{ marginTop: 12 }}
+                />
+              )}
+            </Card>
             <div>
               <Text strong>Template tools (remove tools you do not want enabled)</Text>
               <Select

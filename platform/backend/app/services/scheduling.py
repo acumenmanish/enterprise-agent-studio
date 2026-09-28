@@ -1,5 +1,6 @@
 import json
 import math
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,47 @@ from app.services.workflow_contracts import validate_workflow_graph
 
 class SchedulingInputError(ValueError):
     pass
+
+
+def apply_scheduling_constraints(
+    source_data: dict[str, Any],
+    constraints: dict[str, Any],
+    horizon_days: int,
+) -> dict[str, Any]:
+    data = deepcopy(source_data)
+    machines = {machine["id"] for machine in data["machines"]}
+    materials = {item["id"]: item for item in data["materials"]}
+    seen_blackouts: set[tuple[str, int]] = set()
+
+    for blackout in constraints.get("machine_blackouts", []):
+        machine_id = blackout["machine_id"]
+        day = blackout["day"]
+        if machine_id not in machines:
+            raise SchedulingInputError(f"Unknown machine in policy constraint: {machine_id}")
+        if day >= horizon_days:
+            raise SchedulingInputError(
+                f"Machine blackout day {day + 1} is outside the planning horizon"
+            )
+        key = (machine_id, day)
+        if key in seen_blackouts:
+            continue
+        seen_blackouts.add(key)
+        data.setdefault("maintenance", []).append(
+            {"machine_id": machine_id, "day": day, "reason": "approved policy constraint"}
+        )
+
+    for material_id, quantity in constraints.get("material_limits", {}).items():
+        material = materials.get(material_id)
+        if material is None:
+            raise SchedulingInputError(f"Unknown material in policy constraint: {material_id}")
+        if quantity < 0:
+            raise SchedulingInputError("Material policy limits cannot be negative")
+        if quantity > material["available_quantity"]:
+            raise SchedulingInputError(
+                f"Material policy limit cannot increase availability for {material_id}"
+            )
+        material["available_quantity"] = quantity
+    return data
 
 
 def load_manifest(path: Path) -> dict[str, Any]:

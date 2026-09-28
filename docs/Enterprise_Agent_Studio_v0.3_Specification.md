@@ -3446,41 +3446,41 @@ while the underlying platform remains reusable.
 
 Before implementation, confirm that the team agrees on:
 
-- [ ] Printing is the MVP vertical
-- [ ] Production Scheduling is the first killer agent
-- [ ] ERP companies are a primary customer/channel
-- [ ] Agent Studio is technical low-code
-- [ ] LangGraph is the agent runtime
-- [ ] Temporal is the durable workflow engine
+- [Y ] Printing is the MVP vertical
+- [ Y] Production Scheduling is the first killer agent
+- [ Y] ERP companies are a primary customer/channel
+- [ Y] Agent Studio is technical low-code
+- [ Y] LangGraph is the agent runtime
+- [ Y] Temporal is the durable workflow engine
 - [ ] MCP is the agent-facing protocol
-- [ ] Enterprise MCP Gateway is required
-- [ ] Semantic model is a first-class platform component
-- [ ] Semantic versions are immutable
-- [ ] Customer overlays are separate from the base model
-- [ ] No mandatory ETL is the default
-- [ ] Federation + cache + materialization form a hybrid data strategy
-- [ ] RBAC + ABAC + contextual policy is the authorization model
-- [ ] Tool access follows least privilege
-- [ ] Tool versions are explicit
-- [ ] Production schedule publication requires human approval in MVP
-- [ ] LLM does not replace deterministic scheduling optimization
-- [ ] Model policy abstracts providers
-- [ ] Model changes require regression testing
-- [ ] Every production execution is traceable
-- [ ] Cost is attributable to tenant/agent/run
-- [ ] Agent debugging is structured and evidence-based
-- [ ] System of record remains ERP/MES/APS
-- [ ] Agent platform is the system of intelligence
-- [ ] SaaS + dedicated + private deployment is part of the long-term architecture
-- [ ] Agent manifest is the source of truth; canvas ⇄ code round-trip via GitOps
-- [ ] Quick build and Pro canvas operate on the same manifest
-- [ ] Untrusted tool execution is sandboxed; credentials reachable only via proxy
-- [ ] Every run is event-sourced: resume, replay, wake
-- [ ] Outcome checker precedes human approval
-- [ ] Triggers are versioned with the agent
-- [ ] Catalog publishing requires admin approval
-- [ ] Delegated per-user (OAuth) identity is supported
-- [ ] A2A interop and skill packs are planned
+- [ Y] Enterprise MCP Gateway is required
+- [ Y] Semantic model is a first-class platform component
+- [ Y] Semantic versions are immutable
+- [ Y] Customer overlays are separate from the base model
+- [ Y] No mandatory ETL is the default
+- [ Y] Federation + cache + materialization form a hybrid data strategy
+- [ Y] RBAC + ABAC + contextual policy is the authorization model
+- [ Y] Tool access follows least privilege
+- [ Y] Tool versions are explicit
+- [ Y] Production schedule publication requires human approval in MVP
+- [ Y] LLM does not replace deterministic scheduling optimization
+- [ Y] Model policy abstracts providers
+- [ Y] Model changes require regression testing
+- [ Y] Every production execution is traceable
+- [ Y] Cost is attributable to tenant/agent/run
+- [ Y] Agent debugging is structured and evidence-based
+- [ Y] System of record remains ERP/MES/APS
+- [ Y] Agent platform is the system of intelligence
+- [ Y] SaaS + dedicated + private deployment is part of the long-term architecture
+- [ Y] Agent manifest is the source of truth; canvas ⇄ code round-trip via GitOps
+- [ Y] Quick build and Pro canvas operate on the same manifest
+- [ Y] Untrusted tool execution is sandboxed; credentials reachable only via proxy
+- [ Y] Every run is event-sourced: resume, replay, wake
+- [ Y] Outcome checker precedes human approval
+- [ Y] Triggers are versioned with the agent
+- [ Y] Catalog publishing requires admin approval
+- [ Y] Delegated per-user (OAuth) identity is supported
+- [ Y] A2A interop and skill packs are planned
 
 ---
 

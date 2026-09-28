@@ -40,6 +40,7 @@ import AgentBuilderWizard, {
   type BuilderConfiguration,
   type BuilderERPStatus,
   type BuilderModelStatus,
+  type BuilderSchedulingConstraints,
 } from "./AgentBuilderWizard";
 import WorkflowCanvas, { type WorkflowDefinition } from "./WorkflowCanvas";
 
@@ -191,6 +192,30 @@ type ERPPreview = {
   }[];
   data_gaps: { entity: string; available: boolean; reason: string }[];
 };
+type ScenarioDraft = {
+  name: string;
+  objective: "balanced" | "due_date" | "changeover";
+  planning_horizon_days: number;
+  unavailable_machine: string;
+  unavailable_day: number;
+  limited_material: string;
+  material_limit?: number;
+};
+type ScenarioTestResult = {
+  suite: string;
+  cases_run: number;
+  passed: number;
+  results: {
+    case_id: string;
+    name: string;
+    status: string;
+    score: number;
+    metrics?: ScheduleResult["metrics"];
+    solver_status?: string;
+    error?: string;
+    applied_constraints: BuilderSchedulingConstraints;
+  }[];
+};
 type Workspace =
   | "builder"
   | "designer"
@@ -262,7 +287,20 @@ export default function AgentStudio() {
       solver_status: string;
     }[];
   } | null>(null);
+  const [scenarioTestResult, setScenarioTestResult] =
+    useState<ScenarioTestResult | null>(null);
+  const [scenarioCases, setScenarioCases] = useState<ScenarioDraft[]>([
+    {
+      name: "Baseline",
+      objective: "balanced",
+      planning_horizon_days: 5,
+      unavailable_machine: "",
+      unavailable_day: 0,
+      limited_material: "",
+    },
+  ]);
   const [evaluating, setEvaluating] = useState(false);
+  const [testingScenarios, setTestingScenarios] = useState(false);
   const [selectedRun, setSelectedRun] = useState<RunDetail | null>(null);
   const [planningDays, setPlanningDays] = useState(5);
   const [objective, setObjective] = useState(
@@ -499,6 +537,43 @@ export default function AgentStudio() {
       messageApi.error(detail);
     } finally {
       setEvaluating(false);
+    }
+  };
+
+  const runScenarioTests = async () => {
+    setTestingScenarios(true);
+    try {
+      const result = await api<ScenarioTestResult>("/evaluations/scenarios", {
+        method: "POST",
+        body: JSON.stringify({
+          cases: scenarioCases.map((scenario) => ({
+            name: scenario.name,
+            objective: scenario.objective,
+            planning_horizon_days: scenario.planning_horizon_days,
+            constraints: {
+              machine_blackouts: scenario.unavailable_machine
+                ? [
+                    {
+                      machine_id: scenario.unavailable_machine,
+                      day: scenario.unavailable_day,
+                    },
+                  ]
+                : [],
+              material_limits:
+                scenario.limited_material && scenario.material_limit !== undefined
+                  ? { [scenario.limited_material]: scenario.material_limit }
+                  : {},
+            },
+          })),
+        }),
+      });
+      setScenarioTestResult(result);
+      messageApi.success(`Completed ${result.cases_run} independent scenario runs.`);
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "Scenario tests failed";
+      messageApi.error(detail);
+    } finally {
+      setTestingScenarios(false);
     }
   };
 
@@ -1036,6 +1111,259 @@ export default function AgentStudio() {
                       { title: "Late jobs", key: "late", render: (_, row) => row.metrics.late_jobs },
                       { title: "Changeover", key: "changeover", render: (_, row) => `${row.metrics.total_changeover_hours} h` },
                       { title: "Solver", dataIndex: "solver_status", key: "solver_status" },
+                    ]}
+                  />
+                </Card>
+              )}
+              <Card
+                title="Run independent business scenarios"
+                extra={
+                  <Button
+                    onClick={() =>
+                      setScenarioCases((current) => [
+                        ...current,
+                        {
+                          name: `Scenario ${current.length + 1}`,
+                          objective: "balanced",
+                          planning_horizon_days: 5,
+                          unavailable_machine: "",
+                          unavailable_day: 0,
+                          limited_material: "",
+                        },
+                      ])
+                    }
+                  >
+                    Add scenario
+                  </Button>
+                }
+              >
+                <Paragraph>
+                  Each case starts with a fresh workflow state and runs the same
+                  LangGraph request → context/policy → optimizer → outcome-check
+                  flow. Add an optional machine outage or material cap to model
+                  a concrete what-if; approved agent policy constraints also apply.
+                </Paragraph>
+                <Space direction="vertical" size="middle" style={{ display: "flex" }}>
+                  {scenarioCases.map((scenario, index) => (
+                    <Card
+                      key={`${index}-${scenario.name}`}
+                      size="small"
+                      title={`Scenario ${index + 1}`}
+                      extra={
+                        scenarioCases.length > 1 ? (
+                          <Button
+                            danger
+                            type="link"
+                            onClick={() =>
+                              setScenarioCases((current) =>
+                                current.filter((_, rowIndex) => rowIndex !== index),
+                              )
+                            }
+                          >
+                            Remove
+                          </Button>
+                        ) : null
+                      }
+                    >
+                      <Row gutter={[12, 12]}>
+                        <Col xs={24} md={8}>
+                          <Text strong>Scenario name</Text>
+                          <Input
+                            value={scenario.name}
+                            onChange={(event) =>
+                              setScenarioCases((current) =>
+                                current.map((item, rowIndex) =>
+                                  rowIndex === index
+                                    ? { ...item, name: event.target.value }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                        </Col>
+                        <Col xs={24} md={8}>
+                          <Text strong>Optimization objective</Text>
+                          <Select
+                            style={{ display: "block" }}
+                            value={scenario.objective}
+                            options={[
+                              { value: "balanced", label: "Balanced" },
+                              { value: "due_date", label: "Prioritize due dates" },
+                              { value: "changeover", label: "Minimize changeovers" },
+                            ]}
+                            onChange={(value: ScenarioDraft["objective"]) =>
+                              setScenarioCases((current) =>
+                                current.map((item, rowIndex) =>
+                                  rowIndex === index ? { ...item, objective: value } : item,
+                                ),
+                              )
+                            }
+                          />
+                        </Col>
+                        <Col xs={24} md={8}>
+                          <Text strong>Planning horizon (days)</Text>
+                          <InputNumber
+                            min={1}
+                            max={5}
+                            value={scenario.planning_horizon_days}
+                            onChange={(value) =>
+                              setScenarioCases((current) =>
+                                current.map((item, rowIndex) =>
+                                  rowIndex === index && value !== null
+                                    ? { ...item, planning_horizon_days: value }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                        </Col>
+                        <Col xs={24} md={8}>
+                          <Text strong>Unavailable machine (optional)</Text>
+                          <Select
+                            allowClear
+                            style={{ display: "block" }}
+                            placeholder="No outage"
+                            value={scenario.unavailable_machine || undefined}
+                            options={(demoData?.machines ?? []).map((machine) => ({
+                              value: machine.id,
+                              label: machine.name,
+                            }))}
+                            onChange={(value?: string) =>
+                              setScenarioCases((current) =>
+                                current.map((item, rowIndex) =>
+                                  rowIndex === index
+                                    ? { ...item, unavailable_machine: value ?? "" }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                        </Col>
+                        {scenario.unavailable_machine && (
+                          <Col xs={24} md={4}>
+                            <Text strong>Outage day</Text>
+                            <InputNumber
+                              min={1}
+                              max={scenario.planning_horizon_days}
+                              value={scenario.unavailable_day + 1}
+                              onChange={(value) =>
+                                setScenarioCases((current) =>
+                                  current.map((item, rowIndex) =>
+                                    rowIndex === index && value !== null
+                                      ? { ...item, unavailable_day: value - 1 }
+                                      : item,
+                                  ),
+                                )
+                              }
+                            />
+                          </Col>
+                        )}
+                        <Col xs={24} md={8}>
+                          <Text strong>Material limit (optional)</Text>
+                          <Select
+                            allowClear
+                            style={{ display: "block" }}
+                            placeholder="No additional material limit"
+                            value={scenario.limited_material || undefined}
+                            options={(demoData?.materials ?? []).map((material) => ({
+                              value: material.id,
+                              label: material.id,
+                            }))}
+                            onChange={(value?: string) =>
+                              setScenarioCases((current) =>
+                                current.map((item, rowIndex) =>
+                                  rowIndex === index
+                                    ? { ...item, limited_material: value ?? "" }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                        </Col>
+                        {scenario.limited_material && (
+                          <Col xs={24} md={4}>
+                            <Text strong>Available quantity</Text>
+                            <InputNumber
+                              min={0}
+                              max={
+                                demoData?.materials.find(
+                                  (material) => material.id === scenario.limited_material,
+                                )?.available_quantity
+                              }
+                              value={scenario.material_limit}
+                              onChange={(value) =>
+                                setScenarioCases((current) =>
+                                  current.map((item, rowIndex) =>
+                                    rowIndex === index
+                                      ? { ...item, material_limit: value ?? undefined }
+                                      : item,
+                                  ),
+                                )
+                              }
+                            />
+                          </Col>
+                        )}
+                      </Row>
+                    </Card>
+                  ))}
+                </Space>
+                <Button
+                  type="primary"
+                  loading={testingScenarios}
+                  disabled={scenarioCases.some(
+                    (scenario) =>
+                      !scenario.name.trim() ||
+                      Boolean(
+                        scenario.limited_material &&
+                          scenario.material_limit === undefined,
+                      ),
+                  )}
+                  onClick={() => void runScenarioTests()}
+                  style={{ marginTop: 16 }}
+                >
+                  Run scenarios independently
+                </Button>
+              </Card>
+              {scenarioTestResult && (
+                <Card
+                  title={`Scenario comparison: ${scenarioTestResult.passed}/${scenarioTestResult.cases_run} passed`}
+                >
+                  <Table
+                    rowKey="case_id"
+                    pagination={false}
+                    dataSource={scenarioTestResult.results}
+                    columns={[
+                      { title: "Scenario", dataIndex: "name", key: "name" },
+                      {
+                        title: "Result",
+                        dataIndex: "status",
+                        key: "status",
+                        render: (status: string) => (
+                          <Tag color={status === "passed" ? "green" : "red"}>{status}</Tag>
+                        ),
+                      },
+                      {
+                        title: "Scheduled jobs",
+                        key: "scheduled",
+                        render: (_, row) => row.metrics?.orders_scheduled ?? row.error ?? "—",
+                      },
+                      {
+                        title: "Late jobs",
+                        key: "late",
+                        render: (_, row) => row.metrics?.late_jobs ?? "—",
+                      },
+                      {
+                        title: "Changeover",
+                        key: "changeover",
+                        render: (_, row) =>
+                          row.metrics ? `${row.metrics.total_changeover_hours} h` : "—",
+                      },
+                      {
+                        title: "Constraints",
+                        key: "constraints",
+                        render: (_, row) =>
+                          `${row.applied_constraints.machine_blackouts.length} blackout(s), ${Object.keys(row.applied_constraints.material_limits).length} material limit(s)`,
+                      },
                     ]}
                   />
                 </Card>

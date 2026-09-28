@@ -20,6 +20,8 @@ from app.schemas.scheduling import (
     ManifestSaveRequest,
     ManifestValidationRequest,
     ModelCredentialUpdate,
+    PolicyDraftRequest,
+    ScenarioTestRequest,
     ScheduleRequest,
     WorkflowGraphSaveRequest,
 )
@@ -41,9 +43,18 @@ from app.services.manifest_repository import (
     ManifestRepositoryError,
 )
 from app.services.manifest_validation import parse_and_validate_manifest
-from app.services.model_gateway import explain_schedule, interpret_scheduling_request
+from app.services.model_gateway import (
+    explain_schedule,
+    extract_scheduling_constraints,
+    interpret_scheduling_request,
+)
 from app.services.run_log import append_event
-from app.services.scheduling import SchedulingInputError, load_demo_data, optimize_schedule
+from app.services.scheduling import (
+    SchedulingInputError,
+    apply_scheduling_constraints,
+    load_demo_data,
+    optimize_schedule,
+)
 from app.services.workflow_runtime import (
     WorkflowExecutionError,
     build_schedule_workflow,
@@ -126,6 +137,7 @@ def _agent_configuration(
         "enabled_tools": manifest.get("tools", []),
         "scenarios": [],
         "documents": [],
+        "approved_constraints": {"machine_blackouts": [], "material_limits": {}},
     }
     customization = manifest.get("customization")
     if isinstance(customization, dict):
@@ -236,6 +248,57 @@ def extract_agent_document(body: KnowledgeDocumentUpload) -> dict[str, str]:
     return {"name": body.name, "text": text}
 
 
+@router.post("/agent/policy/draft")
+async def draft_policy_constraints(
+    body: PolicyDraftRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    settings = _settings(request)
+    agent = db.get(Agent, "production-scheduling")
+    if agent is None or agent.tenant_id != settings.default_tenant_id:
+        raise HTTPException(status_code=404, detail="Scheduling agent not found")
+    configuration_row, _ = _agent_configuration(
+        db, agent.tenant_id, agent.id, agent.manifest
+    )
+    try:
+        key_override = (
+            decrypt_secret(settings, configuration_row.encrypted_model_key)
+            if configuration_row.encrypted_model_key
+            else None
+        )
+    except CredentialVaultError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not settings.model_configured and key_override is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Configure a model before drafting structured policy constraints.",
+        )
+    data = load_demo_data(settings.demo_data_path)
+    try:
+        draft = await extract_scheduling_constraints(
+            body.text,
+            [machine["id"] for machine in data["machines"]],
+            {material["id"]: material["available_quantity"] for material in data["materials"]},
+            settings,
+            key_override,
+        )
+    except Exception as exc:
+        log.exception("studio.policy_constraint_draft_failed", error_type=type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Could not produce a valid structured policy draft. "
+                "No constraints were applied."
+            ),
+        ) from exc
+    return {
+        "constraints": draft.model_dump(),
+        "requires_user_approval": True,
+        "applied": False,
+    }
+
+
 @router.get("/agent/configuration")
 def get_agent_configuration(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     settings = _settings(request)
@@ -305,6 +368,14 @@ def save_agent_configuration(
             settings.demo_data_path,
         )
     except WorkflowExecutionError as exc:
+        errors.append(str(exc))
+    try:
+        apply_scheduling_constraints(
+            load_demo_data(settings.demo_data_path),
+            body.approved_constraints.model_dump(),
+            5,
+        )
+    except SchedulingInputError as exc:
         errors.append(str(exc))
     if errors:
         raise HTTPException(status_code=422, detail=errors)
@@ -659,7 +730,13 @@ async def create_schedule_run(
     try:
         append_event(db, run, "workflow.started", {"node_order": workflow_order})
         db.commit()
-        state = workflow.invoke({"request": effective_request.model_dump()})
+        approved_constraints = configuration["approved_constraints"]
+        state = workflow.invoke(
+            {
+                "request": effective_request.model_dump(),
+                "policy_constraints": approved_constraints,
+            }
+        )
         data = state["data"]
         append_event(
             db,
@@ -671,6 +748,7 @@ async def create_schedule_run(
                 "data_source": "local-demo-data",
                 "context_chunks_retrieved": retrieved["chunks_retrieved"],
                 "context_sources": retrieved["sources"],
+                "approved_policy_constraints": approved_constraints,
             },
         )
         result = state["result"]
@@ -923,11 +1001,94 @@ def run_evaluations(request: Request) -> dict[str, Any]:
                 "status": "passed" if score == 100 else "failed",
                 "score": score,
                 "metrics": result["metrics"],
+                "schedule": result["schedule"],
                 "solver_status": result["solver_status"],
             }
         )
     return {
         "suite": "printing-scheduling-smoke",
+        "cases_run": len(results),
+        "passed": sum(result["status"] == "passed" for result in results),
+        "results": results,
+    }
+
+
+@router.post("/evaluations/scenarios")
+def run_scenario_tests(
+    body: ScenarioTestRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    settings = _settings(request)
+    agent = db.get(Agent, "production-scheduling")
+    if agent is None or agent.tenant_id != settings.default_tenant_id:
+        raise HTTPException(status_code=404, detail="Scheduling agent not found")
+    _, configuration = _agent_configuration(
+        db, agent.tenant_id, agent.id, agent.manifest
+    )
+    try:
+        workflow, workflow_order = build_schedule_workflow(
+            agent.manifest["execution_graph"],
+            configuration["enabled_tools"],
+            settings.demo_data_path,
+        )
+    except WorkflowExecutionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    base_constraints = configuration["approved_constraints"]
+    orders_count = len(load_demo_data(settings.demo_data_path)["orders"])
+    results = []
+    for case in body.cases:
+        blackouts = [
+            *base_constraints.get("machine_blackouts", []),
+            *[item.model_dump() for item in case.constraints.machine_blackouts],
+        ]
+        limits = dict(base_constraints.get("material_limits", {}))
+        for material_id, quantity in case.constraints.material_limits.items():
+            limits[material_id] = min(limits.get(material_id, quantity), quantity)
+        constraints = {"machine_blackouts": blackouts, "material_limits": limits}
+        schedule_request = ScheduleRequest(
+            planning_horizon_days=case.planning_horizon_days,
+            objective=case.objective,
+        )
+        try:
+            state = workflow.invoke(
+                {
+                    "request": schedule_request.model_dump(),
+                    "policy_constraints": constraints,
+                }
+            )
+            result = state["result"]
+            scheduled = result["metrics"]["orders_scheduled"]
+            score = round(scheduled / orders_count * 100)
+            results.append(
+                {
+                    "case_id": case.name,
+                    "name": case.name,
+                    "status": "passed" if score == 100 and state["outcome_checked"] else "failed",
+                    "score": score,
+                    "metrics": result["metrics"],
+                    "schedule": result["schedule"],
+                    "solver_status": result["solver_status"],
+                    "validation": result["validation"],
+                    "applied_constraints": constraints,
+                    "workflow_nodes": workflow_order,
+                }
+            )
+        except SchedulingInputError as exc:
+            results.append(
+                {
+                    "case_id": case.name,
+                    "name": case.name,
+                    "status": "failed",
+                    "score": 0,
+                    "error": str(exc),
+                    "applied_constraints": constraints,
+                    "workflow_nodes": workflow_order,
+                }
+            )
+    return {
+        "suite": "production-scheduling-scenarios",
         "cases_run": len(results),
         "passed": sum(result["status"] == "passed" for result in results),
         "results": results,

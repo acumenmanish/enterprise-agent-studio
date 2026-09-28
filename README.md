@@ -132,20 +132,26 @@ Studio, control, semantic/context, model, and data planes. Quick Build and Pro
 Canvas edit the same manifest. Workflow graph changes are validated and run
 through LangGraph; only registered local scheduling tools have executable
 handlers. Uploaded UTF-8 text/Markdown and text-based PDF policies are extracted
-and stored with the local tenant-agent context; the top matching passages are
-retrieved for model interpretation/explanation. Those documents are not
-committed into the portable manifest; their names and content hashes are.
-Manifest saves are committed to a local, container-persisted Git repository.
-The runtime records outcome validation before planner approval.
+and stored with the local tenant-agent context; relevant passages are retrieved
+for model interpretation/explanation. A model may propose supported machine
+blackouts and material limits from policy text, but these remain unapplied until
+the user reviews and approves the structured draft. Approved constraints are
+stored with the manifest and passed through a dedicated policy node before the
+optimizer. Unsupported or ambiguous policy text remains context only. Document
+names and hashes, rather than full document text, are committed to the portable
+manifest. Manifest saves are committed to a local, container-persisted Git
+repository. The runtime records outcome validation before planner approval.
 
 The UI supports one implemented template: Printing → Production → Scheduling.
 Its ERP API connection performs a read-only preview; the optimizer still runs on
 synthetic orders, machines, materials, and maintenance because the shared API
 does not expose all required scheduling inputs. MCP and SQL Server connectors
-are shown as future connector types, not working integrations. Text policies
-provide retrieved model context but cannot change deterministic hard
-constraints. Publishing remains a local simulator and requires planner
-approval.
+are shown as future connector types, not working integrations. Raw policy text
+cannot directly change deterministic hard constraints; only explicitly
+reviewed, supported structured constraints are enforced. Evaluation Suite
+supports independent what-if cases for objective choice, machine blackouts,
+and material limits, then compares their scheduling outcomes. Publishing
+remains a local simulator and requires planner approval.
 
 ## v0.3 local implementation sequence
 

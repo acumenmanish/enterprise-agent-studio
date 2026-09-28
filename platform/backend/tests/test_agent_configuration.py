@@ -138,6 +138,81 @@ def test_model_key_override_is_encrypted_and_never_returned(
     assert configured_client.get("/api/v1/studio/model/status").json()["configured"] is False
 
 
+def test_approved_policy_constraints_are_saved_and_applied(configured_client: TestClient):
+    initial = configured_client.get("/api/v1/studio/agent/configuration").json()
+    machine_id = configured_client.get("/api/v1/studio/demo-data").json()["machines"][0]["id"]
+    saved = configured_client.put(
+        "/api/v1/studio/agent/configuration",
+        json={
+            "base_version": initial["base_version"],
+            "domain": initial["domain"],
+            "subdomain": initial["subdomain"],
+            "template_id": initial["template_id"],
+            "system_prompt": "",
+            "business_rules": "",
+            "enabled_tools": initial["enabled_tools"],
+            "scenarios": [],
+            "documents": [],
+            "approved_constraints": {
+                "machine_blackouts": [{"machine_id": machine_id, "day": 0}],
+                "material_limits": {},
+            },
+        },
+    )
+    assert saved.status_code == 200, saved.text
+
+    response = configured_client.post(
+        "/api/v1/studio/schedule/run",
+        json={"planning_horizon_days": 5, "objective": "balanced"},
+    )
+    assert response.status_code == 201, response.text
+    assert all(
+        not (
+            entry["machine_id"] == machine_id
+            and entry["day"] == 0
+        )
+        for entry in response.json()["result"]["schedule"]
+    )
+    run = configured_client.get(f"/api/v1/studio/runs/{response.json()['run_id']}").json()
+    context_event = next(event for event in run["events"] if event["type"] == "context.selected")
+    assert context_event["payload"]["approved_policy_constraints"]["machine_blackouts"] == [
+        {"machine_id": machine_id, "day": 0}
+    ]
+
+
+def test_policy_draft_is_proposed_but_not_applied(configured_client: TestClient, monkeypatch):
+    from pydantic import SecretStr
+
+    import app.api.routes.studio as studio_route
+    from app.schemas.scheduling import SchedulingConstraints
+
+    configured_client.app.state.settings.anthropic_api_key = SecretStr("test-anthropic-key")
+
+    async def draft(*args, **kwargs):
+        return SchedulingConstraints(
+            machine_blackouts=[{"machine_id": "PRESS-01", "day": 1}],
+            material_limits={"board": 5000},
+        )
+
+    monkeypatch.setattr(studio_route, "extract_scheduling_constraints", draft)
+    response = configured_client.post(
+        "/api/v1/studio/agent/policy/draft",
+        json={"text": "PRESS-01 is unavailable on day two."},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["requires_user_approval"] is True
+    assert response.json()["applied"] is False
+    assert response.json()["constraints"]["machine_blackouts"] == [
+        {"machine_id": "PRESS-01", "day": 1}
+    ]
+    current = configured_client.get("/api/v1/studio/agent/configuration").json()
+    assert current["approved_constraints"] == {
+        "machine_blackouts": [],
+        "material_limits": {},
+    }
+
+
 def test_schedule_run_uses_saved_prompt_retrieval_and_encrypted_key(
     configured_client: TestClient, monkeypatch
 ):
@@ -248,6 +323,76 @@ def test_workflow_canvas_save_runs_manifest_graph_validation(
     )
     assert invalid.status_code == 422
     assert any("required property machines" in error for error in invalid.json()["detail"])
+
+
+def test_independent_scenario_runs_apply_per_case_constraints(configured_client: TestClient):
+    machine_id = configured_client.get("/api/v1/studio/demo-data").json()["machines"][0]["id"]
+    response = configured_client.post(
+        "/api/v1/studio/evaluations/scenarios",
+        json={
+            "cases": [
+                {
+                    "name": "Normal operations",
+                    "objective": "balanced",
+                    "planning_horizon_days": 5,
+                    "constraints": {"machine_blackouts": [], "material_limits": {}},
+                },
+                {
+                    "name": "First machine unavailable day one",
+                    "objective": "balanced",
+                    "planning_horizon_days": 5,
+                    "constraints": {
+                        "machine_blackouts": [{"machine_id": machine_id, "day": 0}],
+                        "material_limits": {},
+                    },
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["cases_run"] == 2
+    baseline, outage = result["results"]
+    assert baseline["status"] == "passed"
+    assert outage["applied_constraints"]["machine_blackouts"] == [
+        {"machine_id": machine_id, "day": 0}
+    ]
+    assert outage["status"] == "passed"
+    assert all(
+        not (entry["machine_id"] == machine_id and entry["day"] == 0)
+        for entry in outage["schedule"]
+    )
+
+
+def test_scenario_outage_outside_horizon_fails_only_that_case(configured_client: TestClient):
+    machine_id = configured_client.get("/api/v1/studio/demo-data").json()["machines"][0]["id"]
+    response = configured_client.post(
+        "/api/v1/studio/evaluations/scenarios",
+        json={
+            "cases": [
+                {
+                    "name": "Invalid outage",
+                    "planning_horizon_days": 1,
+                    "constraints": {
+                        "machine_blackouts": [{"machine_id": machine_id, "day": 2}],
+                        "material_limits": {},
+                    },
+                },
+                {
+                    "name": "Independent baseline",
+                    "planning_horizon_days": 5,
+                    "constraints": {"machine_blackouts": [], "material_limits": {}},
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    first, second = response.json()["results"]
+    assert first["status"] == "failed"
+    assert "outside the planning horizon" in first["error"]
+    assert second["status"] == "passed"
 
 
 def test_local_context_retrieval_ranks_matching_document_chunks():
