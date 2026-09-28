@@ -1,0 +1,181 @@
+agent:
+  id: production-scheduling
+  name: Production Scheduling Agent
+  version: 0.1.0
+  domain: printing
+  owner: local-demo
+  objective: Produce a feasible production schedule that balances due dates, priority, and changeover time.
+  instructions: >
+    Use the supplied order, machine, material, calendar, and changeover data.
+    Never violate hard constraints. Recommend a schedule and require planner
+    approval before publishing.
+
+semantic_contract:
+  printing: 1.0.0
+  scheduling: 1.0.0
+
+tools:
+  - get_open_orders@1.0.0
+  - get_machine_capacity@1.0.0
+  - simulate_schedule@1.0.0
+  - publish_schedule@1.0.0
+
+policies:
+  - scheduling-read@1.0.0
+  - scheduling-publish-approval@1.0.0
+
+model_policy:
+  id: openai-compatible-endpoint
+  provider: openai-compatible
+  model: configured-at-deploy
+  endpoint_ref: MODEL_API_BASE
+  credential_ref: MODEL_API_KEY
+  optional: true
+
+optimizer:
+  engine: ortools-cp-sat
+  version: 9.11
+  objective_weights:
+    lateness: 1000
+    priority: 50
+    changeover: 10
+
+execution:
+  default: recommend-and-approve
+  tenant_id: default_tenant
+
+quick_build_defaults:
+  planning_horizon_days: 5
+  objective: balanced
+  template_id: printing-production-scheduling
+
+execution_graph:
+  nodes:
+    - id: schedule_request
+      type: request
+      inputs:
+        type: object
+        properties: {}
+        required: []
+      outputs:
+        type: object
+        properties:
+          planning_horizon_days:
+            type: integer
+          objective:
+            type: string
+        required:
+          - planning_horizon_days
+          - objective
+    - id: local_printing_context
+      type: context
+      inputs:
+        type: object
+        properties: {}
+        required: []
+      outputs:
+        type: object
+        properties:
+          orders:
+            type: array
+          machines:
+            type: array
+          materials:
+            type: array
+          maintenance:
+            type: array
+          changeovers:
+            type: object
+        required:
+          - orders
+          - machines
+          - materials
+    - id: cp_sat_optimizer
+      type: optimizer
+      inputs:
+        type: object
+        properties:
+          planning_horizon_days:
+            type: integer
+          objective:
+            type: string
+          orders:
+            type: array
+          machines:
+            type: array
+          materials:
+            type: array
+        required:
+          - planning_horizon_days
+          - objective
+          - orders
+          - machines
+          - materials
+      outputs:
+        type: object
+        properties:
+          schedule:
+            type: array
+          metrics:
+            type: object
+          validation:
+            type: object
+        required:
+          - schedule
+          - validation
+    - id: outcome_check
+      type: outcome-check
+      inputs:
+        type: object
+        properties:
+          schedule:
+            type: array
+          validation:
+            type: object
+        required:
+          - schedule
+          - validation
+      outputs:
+        type: object
+        properties:
+          outcome:
+            type: object
+        required:
+          - outcome
+    - id: planner_approval
+      type: approval
+      inputs:
+        type: object
+        properties:
+          outcome:
+            type: object
+        required:
+          - outcome
+      outputs:
+        type: object
+        properties:
+          decision:
+            type: string
+        required:
+          - decision
+  edges:
+    - from: schedule_request
+      to: cp_sat_optimizer
+    - from: local_printing_context
+      to: cp_sat_optimizer
+    - from: cp_sat_optimizer
+      to: outcome_check
+    - from: outcome_check
+      to: planner_approval
+
+triggers: []
+outcomes:
+  - id: schedule-feasibility
+    criteria:
+      - all_hard_constraints_satisfied
+    max_iterations: 1
+
+sandbox_profile: local-read-only
+evaluation_suite:
+  id: printing-scheduling-smoke
+  version: 0.1.0

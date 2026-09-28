@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agentstudio
+      POSTGRES_PASSWORD: agentstudio
+      POSTGRES_DB: agentstudio
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentstudio -d agentstudio"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./platform/backend
+    environment:
+      APP_ENV: local
+      DATABASE_URL: postgresql+psycopg://agentstudio:agentstudio@postgres:5432/agentstudio
+      MANIFEST_PATH: /workspace/agents/production-scheduling/manifest.yaml
+      DEMO_DATA_PATH: /workspace/domains/manufacturing/printing/demo_data.json
+      MODEL_NAME: ${MODEL_NAME:-}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_API_BASE: ${MODEL_API_BASE:-}
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./agents:/workspace/agents:ro
+      - ./domains:/workspace/domains:ro
+
+  frontend:
+    build:
+      context: ./platform/frontend
+      args:
+        BACKEND_URL: http://backend:8001
+    environment:
+      BACKEND_URL: http://backend:8001
+    ports:
+      - "3002:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

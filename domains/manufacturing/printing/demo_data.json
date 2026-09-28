@@ -1,0 +1,30 @@
+{
+  "orders": [
+    {"id": "JOB-1001", "customer": "Northstar Books", "product": "Book", "quantity": 4200, "due_day": 2, "priority": 5, "required_material": "paper-coated", "required_capability": "sheetfed"},
+    {"id": "JOB-1002", "customer": "Cedar Foods", "product": "Carton", "quantity": 7000, "due_day": 3, "priority": 4, "required_material": "board", "required_capability": "sheetfed"},
+    {"id": "JOB-1003", "customer": "Aster Media", "product": "Magazine", "quantity": 3200, "due_day": 1, "priority": 5, "required_material": "paper-coated", "required_capability": "web"},
+    {"id": "JOB-1004", "customer": "Harbor Health", "product": "Leaflet", "quantity": 8500, "due_day": 4, "priority": 3, "required_material": "paper-uncoated", "required_capability": "sheetfed"},
+    {"id": "JOB-1005", "customer": "Cedar Foods", "product": "Carton", "quantity": 5100, "due_day": 5, "priority": 2, "required_material": "board", "required_capability": "sheetfed"},
+    {"id": "JOB-1006", "customer": "Northstar Books", "product": "Book", "quantity": 2800, "due_day": 3, "priority": 4, "required_material": "paper-coated", "required_capability": "web"}
+  ],
+  "machines": [
+    {"id": "PRESS-01", "name": "Sheetfed Press 1", "capabilities": ["sheetfed"], "hours_per_day": 8, "available_days": [0, 1, 2, 3, 4], "speed_units_per_hour": 1800},
+    {"id": "PRESS-02", "name": "Sheetfed Press 2", "capabilities": ["sheetfed"], "hours_per_day": 8, "available_days": [0, 1, 2, 3, 4], "speed_units_per_hour": 1400},
+    {"id": "PRESS-03", "name": "Web Press", "capabilities": ["web"], "hours_per_day": 8, "available_days": [0, 1, 2, 3, 4], "speed_units_per_hour": 2200}
+  ],
+  "materials": [
+    {"id": "paper-coated", "available_quantity": 14000},
+    {"id": "board", "available_quantity": 14000},
+    {"id": "paper-uncoated", "available_quantity": 10000}
+  ],
+  "changeovers": {
+    "Book->Magazine": 1,
+    "Magazine->Book": 1,
+    "Carton->Leaflet": 2,
+    "Leaflet->Carton": 2
+  },
+  "maintenance": [
+    {"machine_id": "PRESS-02", "day": 2}
+  ],
+  "horizon_days": 5
+}
