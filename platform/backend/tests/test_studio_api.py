@@ -3,12 +3,14 @@ from collections.abc import Generator
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import Settings
 from app.main import create_app
 
 
 @pytest.fixture
-def client() -> Generator[TestClient, None, None]:
-    app = create_app(database_url="sqlite://")
+def client(tmp_path) -> Generator[TestClient, None, None]:
+    settings = Settings(agent_repository_path=tmp_path / "agent-repository")
+    app = create_app(settings=settings, database_url="sqlite://")
     with TestClient(app) as test_client:
         yield test_client
 
@@ -69,3 +71,79 @@ def test_manifest_exposes_the_same_validated_graph_used_for_authoring(client: Te
     assert body["manifest"]["execution_graph"]["nodes"][0]["id"] == "schedule_request"
     assert body["manifest"]["quick_build_defaults"]["objective"] == "balanced"
     assert "execution_graph:" in body["manifest_yaml"]
+
+
+def test_manifest_is_validated_versioned_and_compared_in_local_git(client: TestClient):
+    import yaml
+
+    initial = client.get("/api/v1/studio/manifest").json()
+    candidate = initial["manifest"]
+    candidate["agent"]["objective"] = "Prioritize due dates without violating constraints."
+    candidate_yaml = yaml.safe_dump(candidate, sort_keys=False)
+
+    validation = client.post(
+        "/api/v1/studio/manifest/validate",
+        json={"manifest_yaml": candidate_yaml},
+    )
+    assert validation.status_code == 200
+    assert validation.json() == {"valid": True, "errors": []}
+
+    saved = client.put(
+        "/api/v1/studio/manifest",
+        json={
+            "manifest_yaml": candidate_yaml,
+            "base_version": initial["manifest"]["agent"]["version"],
+            "change_summary": "Clarify scheduling objective",
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    saved_body = saved.json()
+    assert saved_body["manifest"]["agent"]["version"] == "0.1.1"
+
+    history = client.get("/api/v1/studio/manifest/history").json()
+    assert len(history) == 2
+    assert history[0]["version"] == "0.1.1"
+    assert history[0]["message"] == "Clarify scheduling objective"
+    assert history[1]["version"] == "0.1.0"
+
+    compared = client.get(
+        "/api/v1/studio/manifest/compare",
+        params={
+            "from_revision": history[1]["commit"],
+            "to_revision": history[0]["commit"],
+        },
+    )
+    assert compared.status_code == 200
+    assert "Prioritize due dates" in compared.json()["diff"]
+
+    stale_save = client.put(
+        "/api/v1/studio/manifest",
+        json={
+            "manifest_yaml": candidate_yaml,
+            "base_version": "0.1.0",
+            "change_summary": "Stale update",
+        },
+    )
+    assert stale_save.status_code == 409
+
+
+def test_manifest_validation_rejects_invalid_yaml_graph_and_credential_fields(
+    client: TestClient,
+):
+    import yaml
+
+    invalid_yaml = client.post(
+        "/api/v1/studio/manifest/validate",
+        json={"manifest_yaml": "agent: [unterminated"},
+    )
+    assert invalid_yaml.status_code == 200
+    assert invalid_yaml.json()["valid"] is False
+
+    current = client.get("/api/v1/studio/manifest").json()["manifest"]
+    current["api_key"] = "must-not-be-persisted"
+    invalid_secret = client.post(
+        "/api/v1/studio/manifest/validate",
+        json={"manifest_yaml": yaml.safe_dump(current, sort_keys=False)},
+    )
+    assert invalid_secret.status_code == 200
+    assert any("credential material" in error for error in invalid_secret.json()["errors"])

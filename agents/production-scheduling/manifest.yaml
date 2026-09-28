@@ -25,11 +25,10 @@ policies:
   - scheduling-publish-approval@1.0.0
 
 model_policy:
-  id: openai-compatible-endpoint
-  provider: openai-compatible
+  id: anthropic-default
+  provider: anthropic
   model: configured-at-deploy
-  endpoint_ref: MODEL_API_BASE
-  credential_ref: MODEL_API_KEY
+  credential_ref: ANTHROPIC_API_KEY
   optional: true
 
 optimizer:

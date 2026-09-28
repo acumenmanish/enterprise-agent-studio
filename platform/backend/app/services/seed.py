@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.db.models import Agent, Tenant
-from app.services.scheduling import load_manifest
+from app.services.manifest_repository import LocalManifestRepository
+from app.services.manifest_validation import parse_and_validate_manifest
 
 
 def seed_local_demo(session: Session, settings: Settings | None = None) -> None:
@@ -15,7 +16,17 @@ def seed_local_demo(session: Session, settings: Settings | None = None) -> None:
         session.add(tenant)
         session.flush()
 
-    manifest = load_manifest(settings.manifest_path)
+    with settings.manifest_path.open(encoding="utf-8") as manifest_file:
+        initial_yaml = manifest_file.read()
+    repository = LocalManifestRepository(settings.agent_repository_path)
+    manifest_yaml = repository.initialize(
+        settings.default_tenant_id,
+        "production-scheduling",
+        initial_yaml,
+    )
+    manifest, errors = parse_and_validate_manifest(manifest_yaml)
+    if errors or manifest is None:
+        raise ValueError("Invalid manifest in local agent repository: " + "; ".join(errors))
     agent_id = manifest["agent"]["id"]
     existing_agent = session.scalar(select(Agent).where(Agent.id == agent_id))
     if existing_agent is None:

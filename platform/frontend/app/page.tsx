@@ -17,7 +17,6 @@ import {
   Space,
   Spin,
   Statistic,
-  Steps,
   Tabs,
   Table,
   Tag,
@@ -34,10 +33,15 @@ import {
   HistoryOutlined,
   ReloadOutlined,
   ScheduleOutlined,
-  ShareAltOutlined,
 } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
+import AgentBuilderWizard, {
+  type BuilderConfiguration,
+  type BuilderERPStatus,
+  type BuilderModelStatus,
+} from "./AgentBuilderWizard";
+import WorkflowCanvas, { type WorkflowDefinition } from "./WorkflowCanvas";
 
 const { Content, Header, Sider } = Layout;
 const { Paragraph, Text, Title } = Typography;
@@ -125,13 +129,28 @@ type Manifest = {
       nodes: {
         id: string;
         type: string;
-        inputs: { properties: Record<string, { type: string }> };
-        outputs: { properties: Record<string, { type: string }> };
+        inputs: {
+          type: "object";
+          properties: Record<string, { type: string }>;
+          required: string[];
+        };
+        outputs: {
+          type: "object";
+          properties: Record<string, { type: string }>;
+          required: string[];
+        };
       }[];
       edges: { from: string; to: string }[];
     };
   };
   model_configured: boolean;
+};
+
+type ManifestRevision = {
+  commit: string;
+  created_at: string;
+  message: string;
+  version: string;
 };
 
 type DemoData = {
@@ -157,7 +176,21 @@ type DemoData = {
   horizon_days: number;
 };
 
-type ModelStatus = { configured: boolean; model: string | null; mode: string };
+type ModelStatus = BuilderModelStatus & { mode: string };
+type ERPStatus = BuilderERPStatus;
+type ERPPreview = {
+  connected: boolean;
+  read_only: boolean;
+  preview_limit: number;
+  datasets: {
+    alias: string;
+    count: number;
+    total: number;
+    has_more: boolean;
+    records: Record<string, unknown>[];
+  }[];
+  data_gaps: { entity: string; available: boolean; reason: string }[];
+};
 type Workspace =
   | "builder"
   | "designer"
@@ -172,7 +205,7 @@ const navigation = [
   { key: "runs", label: "Run History", icon: <HistoryOutlined /> },
   { key: "evaluations", label: "Evaluation Suite", icon: <ExperimentOutlined /> },
   { key: "manifest", label: "Agent as Code", icon: <CodeOutlined /> },
-  { key: "data", label: "Demo Data", icon: <DatabaseOutlined /> },
+  { key: "data", label: "Data Connections", icon: <DatabaseOutlined /> },
 ];
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -197,7 +230,23 @@ export default function AgentStudio() {
     "quick-build",
   );
   const [manifest, setManifest] = useState<Manifest | null>(null);
+  const [manifestDraft, setManifestDraft] = useState("");
+  const [manifestEditing, setManifestEditing] = useState(false);
+  const [manifestChangeSummary, setManifestChangeSummary] = useState("");
+  const [manifestErrors, setManifestErrors] = useState<string[]>([]);
+  const [manifestHistory, setManifestHistory] = useState<ManifestRevision[]>([]);
+  const [compareFrom, setCompareFrom] = useState<string>();
+  const [compareTo, setCompareTo] = useState<string>();
+  const [manifestDiff, setManifestDiff] = useState<string | null>(null);
+  const [manifestSaving, setManifestSaving] = useState(false);
+  const [manifestComparing, setManifestComparing] = useState(false);
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [erpStatus, setERPStatus] = useState<ERPStatus | null>(null);
+  const [agentConfiguration, setAgentConfiguration] =
+    useState<BuilderConfiguration | null>(null);
+  const [erpPreview, setERPPreview] = useState<ERPPreview | null>(null);
+  const [erpTesting, setERPTesting] = useState(false);
+  const [workflowSaving, setWorkflowSaving] = useState(false);
   const [demoData, setDemoData] = useState<DemoData | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [evaluationResult, setEvaluationResult] = useState<{
@@ -224,6 +273,7 @@ export default function AgentStudio() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
+  const manifestFileInput = useRef<HTMLInputElement>(null);
 
   const refreshRuns = useCallback(async () => {
     setRuns(await api<RunSummary[]>("/runs"));
@@ -232,18 +282,36 @@ export default function AgentStudio() {
   const loadInitial = useCallback(async () => {
     setInitialLoading(true);
     setError(null);
+    setERPPreview(null);
     try {
-      const [manifestResponse, modelResponse, dataResponse, runResponse] =
+      const [
+        manifestResponse,
+        modelResponse,
+        erpStatusResponse,
+        configurationResponse,
+        dataResponse,
+        runResponse,
+        history,
+      ] =
         await Promise.all([
           api<Manifest>("/manifest"),
           api<ModelStatus>("/model/status"),
+          api<ERPStatus>("/data/erp/status"),
+          api<BuilderConfiguration>("/agent/configuration"),
           api<DemoData>("/demo-data"),
           api<RunSummary[]>("/runs"),
+          api<ManifestRevision[]>("/manifest/history"),
         ]);
       setManifest(manifestResponse);
+      setManifestDraft(manifestResponse.manifest_yaml);
       setModelStatus(modelResponse);
+      setERPStatus(erpStatusResponse);
+      setAgentConfiguration(configurationResponse);
       setDemoData(dataResponse);
       setRuns(runResponse);
+      setManifestHistory(history);
+      setCompareFrom(history[1]?.commit ?? history[0]?.commit);
+      setCompareTo(history[0]?.commit);
       setPlanningDays(manifestResponse.manifest.quick_build_defaults.planning_horizon_days);
       setObjective(manifestResponse.manifest.quick_build_defaults.objective);
       if (runResponse[0]) {
@@ -255,6 +323,59 @@ export default function AgentStudio() {
       setInitialLoading(false);
     }
   }, []);
+
+  const testERPConnection = async () => {
+    setERPTesting(true);
+    setError(null);
+    setERPPreview(null);
+    try {
+      setERPStatus(await api<ERPStatus>("/data/erp/status"));
+      const preview = await api<ERPPreview>("/data/erp/preview", { method: "POST" });
+      setERPPreview(preview);
+      messageApi.success("ERP connection verified. Read-only source preview is ready.");
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "ERP connection failed";
+      setError(detail);
+      messageApi.error(detail);
+    } finally {
+      setERPTesting(false);
+    }
+  };
+
+  const saveERPConnection = async (endpoint: string, token: string) => {
+    setError(null);
+    try {
+      await api<{ configured: boolean }>("/data/erp/connection", {
+        method: "PUT",
+        body: JSON.stringify({ endpoint, api_token: token }),
+      });
+      setERPStatus(await api<ERPStatus>("/data/erp/status"));
+      messageApi.success("ERP endpoint and encrypted bearer token saved.");
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "ERP connection could not be saved";
+      setError(detail);
+      messageApi.error(detail);
+      throw cause;
+    }
+  };
+
+  const resetERPConnection = async () => {
+    setError(null);
+    try {
+      await api<{ environment_connection_configured: boolean }>(
+        "/data/erp/connection",
+        { method: "DELETE" },
+      );
+      setERPStatus(await api<ERPStatus>("/data/erp/status"));
+      setERPPreview(null);
+      messageApi.success("Reverted to the backend .env ERP connection.");
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "ERP connection reset failed";
+      setError(detail);
+      messageApi.error(detail);
+      throw cause;
+    }
+  };
 
   useEffect(() => {
     void loadInitial();
@@ -270,7 +391,7 @@ export default function AgentStudio() {
     }
   };
 
-  const createSchedule = async () => {
+  const createSchedule = async (promptText = requestText) => {
     setRunning(true);
     setError(null);
     try {
@@ -279,7 +400,7 @@ export default function AgentStudio() {
         body: JSON.stringify({
           planning_horizon_days: planningDays,
           objective,
-          request_text: requestText || null,
+          request_text: promptText || null,
         }),
       });
       await refreshRuns();
@@ -292,6 +413,54 @@ export default function AgentStudio() {
       messageApi.error(detail);
     } finally {
       setRunning(false);
+    }
+  };
+
+  const refreshAgentConfiguration = async () => {
+    const [manifestResponse, configurationResponse, modelResponse, history] =
+      await Promise.all([
+        api<Manifest>("/manifest"),
+        api<BuilderConfiguration>("/agent/configuration"),
+        api<ModelStatus>("/model/status"),
+        api<ManifestRevision[]>("/manifest/history"),
+      ]);
+    setManifest(manifestResponse);
+    setManifestDraft(manifestResponse.manifest_yaml);
+    setAgentConfiguration(configurationResponse);
+    setModelStatus(modelResponse);
+    setManifestHistory(history);
+    setCompareFrom(history[1]?.commit ?? history[0]?.commit);
+    setCompareTo(history[0]?.commit);
+  };
+
+  const saveWorkflowGraph = async (graph: WorkflowDefinition) => {
+    if (!manifest) return;
+    setWorkflowSaving(true);
+    setError(null);
+    try {
+      const response = await api<{
+        manifest: Manifest["manifest"];
+        manifest_yaml: string;
+      }>("/manifest/graph", {
+        method: "PUT",
+        body: JSON.stringify({
+          graph,
+          base_version: manifest.manifest.agent.version,
+          change_summary: "Edit production scheduling workflow canvas",
+        }),
+      });
+      setManifest({ ...manifest, manifest: response.manifest, manifest_yaml: response.manifest_yaml });
+      setManifestDraft(response.manifest_yaml);
+      const history = await api<ManifestRevision[]>("/manifest/history");
+      setManifestHistory(history);
+      await refreshAgentConfiguration();
+      messageApi.success(`Workflow validated and saved as v${response.manifest.agent.version}.`);
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "Workflow save failed";
+      setError(detail);
+      messageApi.error(detail);
+    } finally {
+      setWorkflowSaving(false);
     }
   };
 
@@ -331,6 +500,120 @@ export default function AgentStudio() {
     } finally {
       setEvaluating(false);
     }
+  };
+
+  const validateManifestDraft = async (): Promise<boolean> => {
+    try {
+      const result = await api<{ valid: boolean; errors: string[] }>("/manifest/validate", {
+        method: "POST",
+        body: JSON.stringify({ manifest_yaml: manifestDraft }),
+      });
+      setManifestErrors(result.errors);
+      if (result.valid) {
+        messageApi.success("Manifest YAML and typed workflow contracts are valid.");
+      } else {
+        messageApi.error("Manifest validation failed.");
+      }
+      return result.valid;
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "Manifest validation failed";
+      setManifestErrors([detail]);
+      messageApi.error(detail);
+      return false;
+    }
+  };
+
+  const saveManifestDraft = async () => {
+    if (!manifest || !manifestChangeSummary.trim()) {
+      messageApi.error("Add a short change summary before saving a manifest version.");
+      return;
+    }
+    setManifestSaving(true);
+    setManifestErrors([]);
+    try {
+      const validation = await api<{ valid: boolean; errors: string[] }>("/manifest/validate", {
+        method: "POST",
+        body: JSON.stringify({ manifest_yaml: manifestDraft }),
+      });
+      setManifestErrors(validation.errors);
+      if (!validation.valid) {
+        messageApi.error("Fix the manifest validation errors before saving.");
+        return;
+      }
+      const saved = await api<{
+        manifest: Manifest["manifest"];
+        manifest_yaml: string;
+        revision: string;
+      }>("/manifest", {
+        method: "PUT",
+        body: JSON.stringify({
+          manifest_yaml: manifestDraft,
+          base_version: manifest.manifest.agent.version,
+          change_summary: manifestChangeSummary.trim(),
+        }),
+      });
+      setManifest({ ...manifest, manifest: saved.manifest, manifest_yaml: saved.manifest_yaml });
+      setManifestDraft(saved.manifest_yaml);
+      setManifestChangeSummary("");
+      setManifestEditing(false);
+      setManifestDiff(null);
+      const history = await api<ManifestRevision[]>("/manifest/history");
+      setManifestHistory(history);
+      setCompareFrom(history[1]?.commit ?? history[0]?.commit);
+      setCompareTo(history[0]?.commit);
+      messageApi.success(`Saved manifest v${saved.manifest.agent.version} to the local Git repository.`);
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "Manifest save failed";
+      setError(detail);
+      messageApi.error(detail);
+    } finally {
+      setManifestSaving(false);
+    }
+  };
+
+  const compareManifestRevisions = async () => {
+    if (!compareFrom || !compareTo) return;
+    setManifestComparing(true);
+    setError(null);
+    try {
+      const query = new URLSearchParams({
+        from_revision: compareFrom,
+        to_revision: compareTo,
+      });
+      const result = await api<{ diff: string }>(`/manifest/compare?${query.toString()}`);
+      setManifestDiff(result.diff);
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "Manifest comparison failed";
+      setError(detail);
+      messageApi.error(detail);
+    } finally {
+      setManifestComparing(false);
+    }
+  };
+
+  const importManifestFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    try {
+      setManifestDraft(await file.text());
+      setManifestErrors([]);
+      setManifestEditing(true);
+      setManifestDiff(null);
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "Unable to read manifest file";
+      setError(detail);
+    }
+  };
+
+  const exportManifest = () => {
+    const blob = new Blob([manifestDraft], { type: "application/yaml" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${manifest?.manifest.agent.id ?? "agent"}-manifest.yaml`;
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const scheduleColumns: ColumnsType<ScheduleEntry> = [
@@ -632,87 +915,26 @@ export default function AgentStudio() {
                     key: "quick-build",
                     label: "Quick Build",
                     children: (
-                      <Row gutter={[16, 16]}>
-                        <Col xs={24} xl={14}>
-                          <Card title="1 · Choose a local template">
-                            <Card type="inner" title={manifest.manifest.agent.name}>
-                              <Paragraph>
-                                {manifest.manifest.agent.objective}
-                              </Paragraph>
-                              <Space wrap>
-                                <Tag color="blue">{manifest.manifest.agent.domain}</Tag>
-                                <Tag>{manifest.manifest.optimizer.engine}</Tag>
-                                <Tag>{manifest.manifest.tools.length} capabilities</Tag>
-                              </Space>
-                            </Card>
-                            <Divider />
-                            <Row gutter={[16, 16]}>
-                              <Col xs={24} sm={12}>
-                                <Text strong>Planning horizon</Text>
-                                <InputNumber
-                                  min={1}
-                                  max={demoData.horizon_days}
-                                  value={planningDays}
-                                  onChange={(value) => setPlanningDays(value ?? 1)}
-                                  style={{ width: "100%", marginTop: 8 }}
-                                />
-                              </Col>
-                              <Col xs={24} sm={12}>
-                                <Text strong>Scheduling objective</Text>
-                                <Select
-                                  value={objective}
-                                  onChange={setObjective}
-                                  style={{ width: "100%", marginTop: 8 }}
-                                  options={[
-                                    { value: "balanced", label: "Balance all objectives" },
-                                    { value: "due_date", label: "Prioritize due dates" },
-                                    { value: "changeover", label: "Minimize changeovers" },
-                                  ]}
-                                />
-                              </Col>
-                            </Row>
-                            <Paragraph type="secondary" style={{ marginTop: 16 }}>
-                              Template defaults are editable and come from the agent
-                              manifest. Free-form intent is available in Schedule Studio
-                              only when a model endpoint is configured.
-                            </Paragraph>
-                            <Button
-                              type="primary"
-                              icon={<ScheduleOutlined />}
-                              loading={running}
-                              onClick={() => void createSchedule()}
-                            >
-                              Build and validate a schedule
-                            </Button>
-                          </Card>
-                        </Col>
-                        <Col xs={24} xl={10}>
-                          <Card title="2 · Review the configured workflow">
-                            <Steps
-                              direction="vertical"
-                              size="small"
-                              current={-1}
-                              items={manifest.manifest.execution_graph.nodes.map((node) => ({
-                                title: node.id.replaceAll("_", " "),
-                                description: node.type,
-                              }))}
-                            />
-                          </Card>
-                          <Card title="3 · Local runtime boundary" style={{ marginTop: 16 }}>
-                            <Descriptions column={1} size="small">
-                              <Descriptions.Item label="Data">
-                                {demoData.orders.length} synthetic orders
-                              </Descriptions.Item>
-                              <Descriptions.Item label="Optimizer">
-                                OR-Tools CP-SAT
-                              </Descriptions.Item>
-                              <Descriptions.Item label="Action">
-                                Local simulator, explicit approval
-                              </Descriptions.Item>
-                            </Descriptions>
-                          </Card>
-                        </Col>
-                      </Row>
+                      <AgentBuilderWizard
+                        configuration={agentConfiguration}
+                        modelStatus={modelStatus}
+                        erpStatus={erpStatus}
+                        template={{
+                          name: manifest.manifest.agent.name,
+                          objective: manifest.manifest.agent.objective,
+                          tools: manifest.manifest.tools,
+                          policies: manifest.manifest.policies,
+                          graphNodes: manifest.manifest.execution_graph.nodes.length,
+                          version: manifest.manifest.agent.version,
+                        }}
+                        onConfigurationSaved={refreshAgentConfiguration}
+                        onTestRun={(prompt) => void createSchedule(prompt)}
+                        onTestConnection={testERPConnection}
+                        onSaveConnection={saveERPConnection}
+                        onResetConnection={resetERPConnection}
+                        connectionTesting={erpTesting}
+                        running={running}
+                      />
                     ),
                   },
                   {
@@ -722,46 +944,13 @@ export default function AgentStudio() {
                       <Space direction="vertical" size="large" style={{ display: "flex" }}>
                         <Card
                           title="Typed execution graph"
-                          extra={<Tag color="green">Manifest contract validated on load</Tag>}
+                          extra={<Tag color="green">Editable manifest-backed workflow</Tag>}
                         >
-                          <Row gutter={[12, 12]}>
-                            {manifest.manifest.execution_graph.nodes.map((node, index) => (
-                              <Col xs={24} md={12} xl={8} key={node.id}>
-                                <Card
-                                  size="small"
-                                  title={`${index + 1}. ${node.id.replaceAll("_", " ")}`}
-                                  extra={<Tag>{node.type}</Tag>}
-                                >
-                                  <Text strong>Inputs</Text>
-                                  <Paragraph code>
-                                    {Object.entries(node.inputs.properties)
-                                      .map(([name, schema]) => `${name}: ${schema.type}`)
-                                      .join(", ") || "No required input"}
-                                  </Paragraph>
-                                  <Text strong>Outputs</Text>
-                                  <Paragraph code>
-                                    {Object.entries(node.outputs.properties)
-                                      .map(([name, schema]) => `${name}: ${schema.type}`)
-                                      .join(", ") || "No output"}
-                                  </Paragraph>
-                                </Card>
-                              </Col>
-                            ))}
-                          </Row>
-                          <Divider />
-                          <List
-                            size="small"
-                            header={<Text strong>Validated node connections</Text>}
-                            dataSource={manifest.manifest.execution_graph.edges}
-                            renderItem={(edge) => (
-                              <List.Item>
-                                <Space>
-                                  <Tag>{edge.from}</Tag>
-                                  <ShareAltOutlined />
-                                  <Tag>{edge.to}</Tag>
-                                </Space>
-                              </List.Item>
-                            )}
+                          <WorkflowCanvas
+                            key={manifest.manifest.agent.version}
+                            graph={manifest.manifest.execution_graph}
+                            onSave={(graph) => void saveWorkflowGraph(graph)}
+                            saving={workflowSaving}
                           />
                         </Card>
                         <Card
@@ -854,27 +1043,268 @@ export default function AgentStudio() {
             </Space>
           ) : activeWorkspace === "manifest" ? (
             <Space direction="vertical" size="large" style={{ display: "flex" }}>
-              <Card title="Portable agent manifest" extra={<Tag color="green">Source of truth</Tag>}>
+              <Card
+                title={
+                  <Space>
+                    <span>Portable agent manifest</span>
+                    <Tag color="green">v{manifest.manifest.agent.version}</Tag>
+                  </Space>
+                }
+                extra={
+                  <Space wrap>
+                    <Button onClick={exportManifest}>Export YAML</Button>
+                    <Button onClick={() => manifestFileInput.current?.click()}>Import YAML</Button>
+                    {!manifestEditing ? (
+                      <Button type="primary" onClick={() => setManifestEditing(true)}>
+                        Edit manifest
+                      </Button>
+                    ) : (
+                      <>
+                        <Button
+                          onClick={() => {
+                            setManifestDraft(manifest.manifest_yaml);
+                            setManifestErrors([]);
+                            setManifestEditing(false);
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                        <Button onClick={() => void validateManifestDraft()}>
+                          Validate
+                        </Button>
+                      </>
+                    )}
+                  </Space>
+                }
+              >
+                <input
+                  ref={manifestFileInput}
+                  type="file"
+                  accept=".yaml,.yml,application/yaml,text/yaml"
+                  onChange={(event) => void importManifestFile(event)}
+                  style={{ display: "none" }}
+                />
                 <Paragraph>
-                  This versioned YAML manifest pins the printing semantic contract, tools, policies, optimizer, approval behavior, and outcome check. Credentials are configured outside the manifest.
+                  The version-controlled YAML is the source of truth for the agent configuration. Edit or import a portable manifest, validate its typed graph, and save a new immutable local Git version. Credentials stay outside the manifest.
                 </Paragraph>
-                <pre style={{ overflowX: "auto", padding: 20, background: "#111827", color: "#e5e7eb", borderRadius: 8 }}>
-                  {manifest.manifest_yaml}
-                </pre>
+                {manifestEditing ? (
+                  <Space direction="vertical" style={{ display: "flex" }} size="middle">
+                    <Input.TextArea
+                      aria-label="Agent manifest YAML"
+                      value={manifestDraft}
+                      onChange={(event) => {
+                        setManifestDraft(event.target.value);
+                        setManifestErrors([]);
+                      }}
+                      autoSize={{ minRows: 22, maxRows: 42 }}
+                      spellCheck={false}
+                      style={{ fontFamily: "monospace" }}
+                    />
+                    <Input
+                      aria-label="Manifest change summary"
+                      placeholder="Change summary (required for version history)"
+                      maxLength={500}
+                      value={manifestChangeSummary}
+                      onChange={(event) => setManifestChangeSummary(event.target.value)}
+                    />
+                    {manifestErrors.length > 0 && (
+                      <Alert
+                        type="error"
+                        showIcon
+                        message="Manifest validation errors"
+                        description={
+                          <ul style={{ margin: 0, paddingLeft: 20 }}>
+                            {manifestErrors.map((validationError, index) => (
+                              <li key={`${index}-${validationError}`}>{validationError}</li>
+                            ))}
+                          </ul>
+                        }
+                      />
+                    )}
+                    <Button
+                      type="primary"
+                      loading={manifestSaving}
+                      onClick={() => void saveManifestDraft()}
+                    >
+                      Validate and save new version
+                    </Button>
+                  </Space>
+                ) : (
+                  <pre style={{ overflowX: "auto", padding: 20, background: "#111827", color: "#e5e7eb", borderRadius: 8 }}>
+                    {manifest.manifest_yaml}
+                  </pre>
+                )}
+              </Card>
+              <Card title="Immutable local version history">
+                {manifestHistory.length === 0 ? (
+                  <Empty description="No committed manifest versions" />
+                ) : (
+                  <List
+                    dataSource={manifestHistory}
+                    renderItem={(revision) => (
+                      <List.Item>
+                        <Space direction="vertical" size={0}>
+                          <Text strong>v{revision.version} · {revision.message}</Text>
+                          <Text type="secondary">
+                            {new Date(revision.created_at).toLocaleString()} · {revision.commit.slice(0, 12)}
+                          </Text>
+                        </Space>
+                      </List.Item>
+                    )}
+                  />
+                )}
+              </Card>
+              <Card title="Compare manifest versions">
+                <Space wrap style={{ width: "100%" }}>
+                  <Select
+                    aria-label="Compare from version"
+                    placeholder="From version"
+                    value={compareFrom}
+                    onChange={setCompareFrom}
+                    options={manifestHistory.map((revision) => ({
+                      value: revision.commit,
+                      label: `v${revision.version} · ${revision.message}`,
+                    }))}
+                    style={{ minWidth: 220, flex: 1 }}
+                  />
+                  <Select
+                    aria-label="Compare to version"
+                    placeholder="To version"
+                    value={compareTo}
+                    onChange={setCompareTo}
+                    options={manifestHistory.map((revision) => ({
+                      value: revision.commit,
+                      label: `v${revision.version} · ${revision.message}`,
+                    }))}
+                    style={{ minWidth: 220, flex: 1 }}
+                  />
+                  <Button
+                    type="primary"
+                    loading={manifestComparing}
+                    disabled={manifestHistory.length < 2 || !compareFrom || !compareTo}
+                    onClick={() => void compareManifestRevisions()}
+                  >
+                    Compare
+                  </Button>
+                </Space>
+                {manifestDiff !== null && (
+                  <pre style={{ overflowX: "auto", padding: 20, background: "#111827", color: "#e5e7eb", borderRadius: 8, marginTop: 16 }}>
+                    {manifestDiff || "These manifest versions are identical."}
+                  </pre>
+                )}
               </Card>
               <Card title="Model gateway">
                 <Descriptions column={1}>
                   <Descriptions.Item label="Mode">{modelStatus?.mode ?? "Loading"}</Descriptions.Item>
                   <Descriptions.Item label="Configured model">{modelStatus?.model ?? "None (local deterministic explanation)"}</Descriptions.Item>
-                  <Descriptions.Item label="Setup">Set MODEL_NAME and MODEL_API_KEY in the ignored local .env file, then restart the backend. MODEL_API_BASE is optional for compatible endpoints.</Descriptions.Item>
+                  <Descriptions.Item label="Provider">{modelStatus?.provider ?? "Not configured"}</Descriptions.Item>
+                  <Descriptions.Item label="Setup">
+                    The backend reads ANTHROPIC_API_KEY from the ignored local .env file and uses claude-sonnet-4-5 by default. MODEL_NAME can pin another Anthropic model. Existing OpenAI-compatible endpoints remain supported through MODEL_NAME, MODEL_API_KEY, and MODEL_API_BASE. Keys never enter the browser or agent manifest.
+                  </Descriptions.Item>
                 </Descriptions>
               </Card>
             </Space>
           ) : (
             <Space direction="vertical" size="large" style={{ display: "flex" }}>
+              <Card
+                title="ERP Query API · read-only connection"
+                extra={
+                  <Tag color={erpStatus?.configured ? "green" : "default"}>
+                    {erpStatus?.configured ? "Credentials configured" : "Not configured"}
+                  </Tag>
+                }
+              >
+                <Paragraph>
+                  Connect using the documented server-to-server API. Configure the
+                  endpoint and active bearer token in the Quick Build data step;
+                  environment-level ERP_QUERY_API_URL and ERP_API_TOKEN are also
+                  supported. The token is encrypted at rest, never returned to the
+                  browser, and never saved in the agent manifest.
+                </Paragraph>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Read-only preview only"
+                  description="This connection verifies the orders, machines, operations, and schedule aliases. Live schedule generation is not enabled yet: the API docs do not expose inventory or changeover data, and the maintenance alias is disabled. The optimizer continues to use synthetic data until those gaps and field mappings are validated."
+                  style={{ marginBottom: 16 }}
+                />
+                <Space wrap>
+                  <Tag>
+                    Endpoint: {erpStatus?.endpoint_configured ? "configured" : "missing"}
+                  </Tag>
+                  <Tag>
+                    Bearer token: {erpStatus?.credential_configured ? "configured" : "missing"}
+                  </Tag>
+                  <Button
+                    type="primary"
+                    icon={<DatabaseOutlined />}
+                    loading={erpTesting}
+                    disabled={!erpStatus?.configured}
+                    onClick={() => void testERPConnection()}
+                  >
+                    Test connection and preview data
+                  </Button>
+                </Space>
+              </Card>
+              {erpPreview && (
+                <>
+                  <Card title="Live source preview" extra={<Tag color="blue">Read only</Tag>}>
+                    <Row gutter={[12, 12]}>
+                      {erpPreview.datasets.map((dataset) => (
+                        <Col xs={24} key={dataset.alias}>
+                          <Card
+                            type="inner"
+                            title={`${dataset.alias} · ${dataset.total.toLocaleString()} records`}
+                            extra={dataset.has_more ? `First ${dataset.count} shown` : undefined}
+                          >
+                            {dataset.records.length > 0 ? (
+                              <Table<Record<string, unknown>>
+                                size="small"
+                                pagination={false}
+                                scroll={{ x: 700 }}
+                                rowKey={(_, index) => `${dataset.alias}-${index}`}
+                                dataSource={dataset.records}
+                                columns={Object.keys(dataset.records[0]).map((field) => ({
+                                  title: field,
+                                  dataIndex: field,
+                                  key: field,
+                                  render: (value: unknown) =>
+                                    value == null
+                                      ? "—"
+                                      : typeof value === "object"
+                                        ? JSON.stringify(value)
+                                        : String(value),
+                                }))}
+                              />
+                            ) : (
+                              <Empty description="No records returned for this alias" />
+                            )}
+                          </Card>
+                        </Col>
+                      ))}
+                    </Row>
+                  </Card>
+                  <Card title="Scheduler data requirements">
+                    <List
+                      dataSource={erpPreview.data_gaps}
+                      renderItem={(gap) => (
+                        <List.Item>
+                          <Space direction="vertical" size={0}>
+                            <Text strong>{gap.entity}</Text>
+                            <Text type="secondary">{gap.reason}</Text>
+                          </Space>
+                          <Tag color={gap.available ? "green" : "gold"}>
+                            {gap.available ? "Available" : "Mapping required"}
+                          </Tag>
+                        </List.Item>
+                      )}
+                    />
+                  </Card>
+                </>
+              )}
               <Card title="Local printing demo data" extra={<Tag>Read-only inputs</Tag>}>
                 <Paragraph>
-                  Synthetic data only. No external ERP, MES, credentials, or live customer records are used.
+                  Synthetic fallback data used by the current optimizer and evaluation suite. A successful ERP preview does not change schedule inputs.
                 </Paragraph>
                 <Table
                   rowKey="id"

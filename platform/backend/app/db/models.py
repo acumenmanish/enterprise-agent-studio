@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -31,6 +31,22 @@ class Agent(Base):
     )
 
     runs: Mapped[list["AgentRun"]] = relationship(back_populates="agent")
+
+
+class AgentConfiguration(Base):
+    __tablename__ = "studio_agent_configurations"
+
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"), primary_key=True)
+    configuration: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    encrypted_model_key: Mapped[bytes | None] = mapped_column(LargeBinary)
+    encrypted_erp_token: Mapped[bytes | None] = mapped_column(LargeBinary)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
 
 
 class AgentRun(Base):

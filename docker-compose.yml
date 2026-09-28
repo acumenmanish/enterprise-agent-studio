@@ -21,10 +21,16 @@ services:
       APP_ENV: local
       DATABASE_URL: postgresql+psycopg://agentstudio:agentstudio@postgres:5432/agentstudio
       MANIFEST_PATH: /workspace/agents/production-scheduling/manifest.yaml
+      AGENT_REPOSITORY_PATH: /var/lib/agentstudio/manifests
       DEMO_DATA_PATH: /workspace/domains/manufacturing/printing/demo_data.json
       MODEL_NAME: ${MODEL_NAME:-}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-}
       MODEL_API_KEY: ${MODEL_API_KEY:-}
       MODEL_API_BASE: ${MODEL_API_BASE:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
+      ERP_QUERY_API_URL: ${ERP_QUERY_API_URL:-}
+      ERP_API_TOKEN: ${ERP_API_TOKEN:-}
     ports:
       - "8001:8001"
     depends_on:
@@ -33,6 +39,7 @@ services:
     volumes:
       - ./agents:/workspace/agents:ro
       - ./domains:/workspace/domains:ro
+      - manifestrepo:/var/lib/agentstudio/manifests
 
   frontend:
     build:
@@ -48,3 +55,4 @@ services:
 
 volumes:
   pgdata:
+  manifestrepo:

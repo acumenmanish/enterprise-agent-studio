@@ -2,7 +2,7 @@ Smart Schedule AI Agent --- Query API Documentation
 ===================================================
 
 The **Smart Schedule AI Agent Query API** (ai\_agent\_query\_api.php) is
-a server-to-server REST endpoint designed for the AI Agent (Lemmata)
+a server-to-server REST endpoint designed for the AI Agent
 backend. It allows the agent to securely query and write back
 scheduling/production data into tenant databases without exposing raw
 database credentials.
@@ -20,7 +20,7 @@ database credentials.
 
 -   **Database Resolution:** Automatically resolves the caller\'s tenant
     > database based on validated claims inside the JWT token
-    > (store\_id, fyear, lemmata\_tenant).
+    > (store\_id, fyear, agent\_tenant).
 
 ### Core Security & Isolation Principles
 

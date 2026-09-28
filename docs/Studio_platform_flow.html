@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Studio v0.3 — benchmark-aligned creation flow</title>
+<style>
+:root{
+  --ink:#1a1a1a; --txt2:#5f5f5f; --txt3:#8a8a8a; --txt4:#b0b0b0;
+  --border:#dcdcdc; --border-soft:#e8e8e8; --accent:#2563eb;
+  --accent-tint:rgba(37,99,235,.10); --accent-border:rgba(37,99,235,.32);
+  --ink-tint:rgba(26,26,26,.06); --warn:rgba(217,119,6,.12); --warn-border:rgba(217,119,6,.45);
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;padding:28px 20px;background:#fafafa;color:var(--ink);
+  font-family:var(--sans);font-size:14px;line-height:20px;}
+.page{max-width:1080px;margin:0 auto;}
+button,input{font:inherit;}
+h1{font-size:19px;font-weight:600;margin:0 0 4px;letter-spacing:0;}
+.sub{font-size:13px;color:var(--txt3);margin:0 0 18px;}
+.tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;}
+.tab{padding:7px 16px;border:1px solid var(--border);border-radius:999px;background:#fff;
+  color:var(--txt2);cursor:pointer;font-size:13px;transition:all .15s ease;}
+.tab:hover{border-color:var(--ink);color:var(--ink);}
+.tab.on{border-color:var(--ink);color:var(--ink);background:var(--ink-tint);}
+.pills{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+.pill{display:flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border);
+  border-radius:999px;background:#fff;color:var(--txt2);cursor:pointer;transition:all .15s ease;
+  font-size:13px;white-space:nowrap;}
+.pill .num{font-variant-numeric:tabular-nums;font-size:12px;color:var(--txt4);}
+.pill:hover{border-color:var(--ink);color:var(--ink);}
+.pill.on{border-color:var(--ink);color:var(--ink);background:var(--ink-tint);}
+.pill.on .num{color:var(--ink);}
+.cols{display:grid;grid-template-columns:320px 1fr;gap:16px;align-items:start;}
+@media(max-width:820px){.cols{grid-template-columns:1fr;}}
+.panel{border:1px solid var(--border);border-radius:12px;padding:14px;background:#fff;}
+.ph{font-size:12px;color:var(--txt3);margin:0 0 8px;font-weight:500;}
+.uitem{display:flex;gap:8px;align-items:flex-start;padding:8px 0;
+  border-bottom:1px solid var(--border-soft);font-size:13px;}
+.uitem:last-child{border-bottom:none;}
+.uitem svg{flex:none;margin-top:1px;color:var(--txt2);}
+.plane{border:1px solid var(--border);border-radius:10px;padding:9px 12px;margin-bottom:8px;
+  background:#fff;transition:all .25s ease;opacity:.45;}
+.plane.on{opacity:1;border-color:var(--ink);}
+.pname{font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;}
+.pname .tag{font-size:11px;font-weight:400;color:var(--txt4);}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;}
+.chip{font-size:12px;padding:3px 8px;border-radius:6px;border:1px solid var(--border);
+  color:var(--txt3);background:#fff;transition:all .25s ease;}
+.chip.on{border-color:var(--ink);color:var(--ink);background:var(--ink-tint);}
+.trace{margin-top:14px;}
+.trow{display:flex;gap:10px;align-items:flex-start;padding:7px 0;font-size:13px;
+  border-bottom:1px dashed var(--border);}
+.trow:last-child{border-bottom:none;}
+.tdot{flex:none;width:19px;height:19px;border-radius:999px;border:1px solid var(--ink);color:var(--ink);
+  font-size:11px;display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums;background:#fff;}
+.arts{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;}
+.art{font-size:12px;font-family:var(--mono);padding:3px 8px;border-radius:6px;
+  background:var(--accent-tint);color:var(--ink);border:1px solid var(--accent-border);}
+.artlab{font-size:12px;color:var(--txt3);margin-top:14px;font-weight:500;}
+.flow{margin-top:10px;font-size:12px;color:var(--txt2);display:flex;flex-wrap:wrap;gap:4px;align-items:center;}
+.fnode{padding:3px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:#fff;}
+.fnode.hl{border-color:var(--ink);color:var(--ink);}
+.farr{color:var(--txt4);}
+.banner{border:1px solid var(--warn-border);background:var(--warn);border-radius:10px;
+  padding:11px 13px;font-size:13px;margin-bottom:14px;}
+.brow{display:grid;grid-template-columns:150px 1fr 1fr 1fr 1.2fr;gap:10px;padding:9px 4px;
+  border-bottom:1px solid var(--border-soft);font-size:12px;align-items:start;}
+.brow:last-child{border-bottom:none;}
+.bhead{font-size:11px;color:var(--txt3);font-weight:600;border-bottom:1px solid var(--border);}
+.bwrap{overflow-x:auto;border:1px solid var(--border);border-radius:12px;padding:10px 14px;
+  min-width:700px;background:#fff;}
+.bcap{font-weight:600;font-size:12px;}
+.btag{display:inline-block;font-size:10px;padding:1px 7px;border-radius:999px;margin-left:5px;vertical-align:1px;}
+.btag.add{background:var(--accent-tint);border:1px solid var(--accent-border);}
+.btag.have{background:var(--ink-tint);border:1px solid var(--border);color:var(--txt2);}
+.footer{margin-top:22px;font-size:11.5px;color:var(--txt4);border-top:1px solid var(--border-soft);padding-top:10px;}
+</style>
+<base target="_blank">
+</head>
+<body>
+<div class="page">
+
+<h1>Agent Studio v0.3 — benchmark-aligned creation flow</h1>
+<p class="sub">7-step creation journey mapped to the internal platform planes, upgraded against OpenAI AgentKit, Microsoft Copilot Studio, and Claude Managed Agents. <b>*</b> = introduced or upgraded in v0.3.</p>
+
+<div class="tabs">
+  <button class="tab on" id="tab-flow" onclick="showTab(0)">Creation walkthrough</button>
+  <button class="tab" id="tab-bench" onclick="showTab(1)">What to borrow from each platform</button>
+</div>
+
+<div id="view-flow">
+  <div class="pills" id="pills"></div>
+  <div class="cols">
+    <div>
+      <div class="panel">
+        <p class="ph">What the user sees</p>
+        <div id="usersees"></div>
+      </div>
+      <div id="flowbox" style="margin-top:14px;"></div>
+    </div>
+    <div class="panel">
+      <p class="ph">Internal architecture — planes activated by this step</p>
+      <div id="planes"></div>
+    </div>
+  </div>
+  <p class="artlab">Artifacts produced / mutated</p>
+  <div class="arts" id="arts"></div>
+  <p class="artlab">Internal event trace</p>
+  <div class="trace panel" id="trace" style="margin-top:6px;"></div>
+</div>
+
+<div id="view-bench" style="display:none;">
+  <div class="banner">Two cautionary signals drive this revision: OpenAI is <b>sunsetting Agent Builder + Evals</b> (Nov 30, 2026) and pushing users to code/SDKs, and Claude Managed Agents runs <b>Claude models only, on Anthropic infra only</b>. The moat for this platform: own the agent artifact (agent-as-code), keep providers interchangeable behind the model control plane, and borrow the execution primitives — durable sessions, sandbox isolation, outcomes.</div>
+  <div class="bwrap">
+    <div class="brow bhead"><div>Capability</div><div>OpenAI AgentKit</div><div>Copilot Studio</div><div>Claude Managed Agents</div><div>Lands in your studio</div></div>
+    <div id="brows"></div>
+  </div>
+</div>
+
+<p class="footer">Enterprise Agent Studio · combined specification v0.3 · benchmark alignment release (FR-021→033, NFR-010/011, ADR-013/014/015) · companion to the v0.3 combined spec and architecture diagram.</p>
+</div>
+
+<script>
+var IC={
+ search:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
+ msg:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 01-8 8H4l2-3a8 8 0 1115-5z"/></svg>',
+ catalog:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v16H4z"/><path d="M8 3v4M16 3v4M4 10h16"/></svg>',
+ model:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>',
+ key:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 5l2.5 2.5M14 8l2 2"/></svg>',
+ data:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><ellipse cx="12" cy="5.5" rx="8" ry="2.8"/><path d="M4 5.5v13c0 1.6 3.6 2.9 8 2.9s8-1.3 8-2.9v-13"/><path d="M4 12c0 1.6 3.6 2.9 8 2.9s8-1.3 8-2.9"/></svg>',
+ shield:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3v6c0 5-3.5 9.3-8 11-4.5-1.7-8-6-8-11V5z"/><path d="M9 12l2 2 4-4"/></svg>',
+ create:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+ canvas:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><circle cx="17.5" cy="17.5" r="3.5"/></svg>',
+ check:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>',
+ save:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>'
+};
+
+var PLANES=[
+ {id:'exp',name:'Experience plane',tag:'Studio UI',comps:['Quick-start NL mode','Template gallery + domain search','Model picker + usage estimator','Connector wizard','Policy & rules upload','Workflow canvas (React Flow)','Version compare','Export as code (GitOps)']},
+ {id:'ctrl',name:'Agent control plane',tag:'agent runtime',comps:['Agent registry','Agent runtime (LangGraph)','Orchestrator (multi-agent + A2A)','Memory','HITL approvals','Triggers (cron · event · webhook)','Event-sourced run log (resume / replay / wake)','Outcome checker']},
+ {id:'sem',name:'Context / semantic plane',tag:'semantics',comps:['Domain ontology (Printing core)','Template semantic pack','Customer semantic overlay','Context planner','Glossary / metrics','Skill packs (instructions + scenarios)']},
+ {id:'cap',name:'Capability / MCP plane',tag:'tools',comps:['MCP gateway','Tool registry','Query gateway','Action gateway','Capability policy','Sandboxed tool executor','Credential proxy (vault stays outside)']},
+ {id:'data',name:'Data / system fabric',tag:'connectors',comps:['REST / API connector','MCP server connector','SQL connector (PostgreSQL · MySQL · SQL Server)','ERP / MES / MIS systems','Event bus (Kafka / Redpanda)','Cache (Redis)']},
+ {id:'model',name:'Model control plane',tag:'models',comps:['Model gateway (LiteLLM)','Template model policy','Routing & fallback','Cost / latency controls','Provider abstraction — no lock-in']},
+ {id:'trust',name:'Trust & control (cross-cutting)',tag:'governance',comps:['IAM + tenant isolation','OPA policy engine','Secrets vault (Vault / KMS)','Audit + evaluation','Guardrail RAG index','Catalog publish approval']}
+];
+
+var STEPS=[
+ {t:'Quick start',full:'Optional step 0 — describe the use case in plain language, or skip to the wizard',
+  ui:[['msg','NL box: "I need an agent that builds weekly press schedules from our ERP orders and machine capacity"'],['msg','Mode toggle: Quick build (opinionated defaults) vs Pro canvas (full control) — Copilot-style two-tier, but upgrade without rebuild'],['check','Studio proposes 3 ranked templates with rationale; one click prefills the whole wizard']],
+  act:{exp:[0],sem:[1],ctrl:[0],trust:[0]},
+  flow:null,
+  arts:['intent_draft','template_shortlist (3)'],
+  trace:['Intent parsed → embedding match over immutable template manifests in the registry','Ranked by domain / entity / KPI overlap with the Printing core ontology','Wizard slots prefilled from the chosen template; every default is visible and editable','User can switch to Pro canvas at any point — same underlying manifest, no rework (Copilot’s Builder→Studio lesson, done cleanly)']},
+ {t:'Pick template',full:'Search domain → subdomain → choose a pre-built use case template',
+  ui:[['search','Domain tree: printing → production · scheduling · quality · maintenance'],['catalog','Template card: Production Scheduling Agent — graph, semantic pack, skill pack, tool bundle, eval suite, reference-model badge'],['check','Preview: KPIs optimized, sample run, required data sources, cost estimate per 1k runs']],
+  act:{exp:[1],sem:[0,1,5],ctrl:[0],cap:[1],trust:[0]},
+  flow:null,
+  arts:['template_manifest@1.0.0','semantic_pack: printing-core 1.4','tool_bundle (12 tools)','eval_suite: 500–2,000 scenarios'],
+  trace:['Registry returns immutable template manifest — graph, semantic pack, skill pack, tool bundle, eval suite','Semantic plane loads the Printing core ontology slice (entities, metrics, scheduling concepts)','Skill pack attached: reusable instructions + few-shot scenarios, exportable for ERP partners (Copilot/Claude "skills" pattern)','Draft agent record instantiated, tenant-scoped','Tool bundle shown read-only; exposure still filtered by capability policy']},
+ {t:'Choose model',full:'Studio suggests the template’s reference model; override allowed but recorded',
+  ui:[['model','Ranked list with "suggested" badge + rationale (structured-output quality, tool-use reliability, context size)'],['model','Usage estimator: forecast credits/cost per 1k runs before deploying (Copilot-style estimator)'],['key','Override path: any provider via the model gateway — the agent binds a model policy, never a vendor']],
+  act:{exp:[2],model:[0,1,2,3,4],ctrl:[0],trust:[0]},
+  flow:null,
+  arts:['model_policy@1.0 (pinned)','routing_table per task','cost_forecast (1k runs)'],
+  trace:['Template model policy loads — built and regression-tested against specific model classes','Model gateway ranks candidates; suggestion rendered with rationale, user override recorded explicitly','Usage estimator forecasts cost/latency per 1k runs from template benchmark runs','Policy version pinned — no silent provider upgrades (spec §27); fallback chain configured','Tenant cost ceiling validated — the anti-lock-in stance is deliberate: OpenAI sunset its builder, Claude is Claude-only']},
+ {t:'Add API key',full:'Provider key, or OAuth for per-user delegated access — never enters agent config',
+  ui:[['key','Key input with provider selector; masked after save — or connect OAuth for on-behalf-of access'],['shield','Connection test via credential proxy: gateway authenticates, validates quota'],['check','Credential appears only as a vault reference; sandboxed executors never see it']],
+  act:{exp:[2],model:[0],cap:[6],trust:[2,3]},
+  flow:null,
+  arts:['vault: secret/<tenant>/provider-key','credential_ref → tenant','oauth_delegation (optional)'],
+  trace:['Studio → secrets vault (Vault / KMS): write key, receive opaque reference','Credential proxy pattern (Claude’s boundary): the sandbox never holds credentials; a proxy fetches from the vault and makes the external call — prompt injection inside a tool can’t reach the tokens','Optional OAuth flow for per-user delegated access (Managed Agents’ built-in OAuth pattern)','Audit event written: key added, by whom, for which provider','Manifest stores only vault:// references (spec §47, now enforced architecturally)']},
+ {t:'Connect data',full:'Studio suggests sources from the template; connect via API, MCP, or direct SQL',
+  ui:[['data','Suggested sources: ERP orders, MES capacity, APS schedule, inventory DB — required entities listed per source'],['data','Connector choice per source: REST/API · MCP server · SQL (PostgreSQL / MySQL / SQL Server)'],['check','Schema introspection → mapping preview "7 of 8 entities mapped"; code-execution tools flagged as sandboxed']],
+  act:{exp:[3],cap:[0,1,2,4,5],data:[0,1,2,3,5],sem:[3],trust:[2,3]},
+  flow:['Capability profile','Required entities','Suggest connectors','Connect + test','Introspect schema','Semantic mapping','Register tools'],
+  arts:['connector_configs (4)','semantic_mapping v0.1','tool registrations @1.x (7)','federation targets (Trino)'],
+  trace:['Capability profile → required entities: open orders, machine capacity, materials, changeover matrix…','Wizard suggests source types per entity: live API for orders, SQL for inventory, MCP for MES','Credentials to vault via proxy; connections tested; schemas introspected (SQL / OpenAPI / MCP discovery)','Semantic-to-capability mapper drafts entity↔field mappings; data engineer approves','Tools registered with versions, risk class R0–R4, least-privilege scopes (spec §13, §15)','Any tool that executes code/LLM-generated queries runs in the sandboxed executor — isolated from network and credentials','Systems of record unchanged; federation default, materialize only when perf demands (spec §18)']},
+ {t:'Policies & rules',full:'Upload policies, business rules, guardrails — "what the agent must not do"',
+  ui:[['shield','Upload: policy docs, SOPs, scheduling rules, KPI definitions — auto-classified on ingest'],['shield','Guardrail preview: auto-generated must-not list (never override hard constraints · never publish without approval · never stop a machine)'],['msg','Prompt scenarios drafted from your rules — edit before they become part of the pinned instruction set']],
+  act:{exp:[4],sem:[2,4],trust:[1,4,3],cap:[4]},
+  flow:null,
+  arts:['customer_overlay v0.1','OPA policies (compiled)','guardrail_prompts','RAG index: rules_docs'],
+  trace:['Ingest classifies uploads: policy → OPA (Rego), business rules → customer semantic overlay, SOPs → RAG index','Guardrail prompt scenarios generated — user-editable before pinning','KPI definitions + custom terminology merge into customer overlay; base ontology untouched (spec §9, §11)','OPA compiles policy set; capability policy restricts tool exposure to the allowlist (spec §17)','Rules versioned + audit-logged; regression suite flagged to re-run on policy change']},
+ {t:'Create agent',full:'Assembly, not generation — canvas opens versioned, editable, with everything pinned',
+  ui:[['canvas','Canvas: template graph with typed node contracts — understand → fetch (orders · capacity · materials) → build problem → optimize → validate → outcome check → explain → approve → publish'],['canvas','Left rail: tool palette by risk class R0–R4 + skill packs; right rail: semantic contract, model policy, triggers'],['save','New: outcome-checker node (agent self-validates against success criteria before HITL) · triggers (cron/event/webhook) · version compare · export as code']],
+  act:{exp:[4,5,6,7],ctrl:[0,1,2,3,4,5,6,7],cap:[0,2,3],model:[0],sem:[3],trust:[3]},
+  flow:['Understand request','Fetch orders','Fetch capacity','Fetch materials','Build problem','Optimize (OR-Tools)','Validate','Outcome check','Explain','Human approval','Publish'],
+  arts:['agent: production-scheduling@1.0.0','pinned: semantic 1.4 · tools 2.x · policy 1.x · model_policy 1.0','run_log (event-sourced)','deploy: DEV→TEST→STAGING→PROD'],
+  trace:['Control plane assembles the artifact: identity + instructions + typed graph + semantic contract + tools + policies + model policy — every dependency pinned (spec §8, §27)','Manifest YAML is the source of truth: canvas ⇄ code round-trip, GitOps CI/CD, exportable — the lesson of OpenAI sunsetting its closed builder','Event-sourced run log from birth: every execution appended as events; crash → wake + resume from last event (Claude’s durable-session principle, on Temporal)','Outcome checker: agent self-evaluates its schedule against success criteria before asking a human — fewer low-quality approvals','Publish is R3: planner approval via HITL before any write-back to ERP/MES/APS (spec §24); catalog publishing needs admin approval','On deploy: regression suite must pass thresholds; production traces feed back as new eval test sets (Copilot’s transcript harvesting)']}
+];
+
+var BENCH=[
+ {cap:'Visual build + templates',oai:'Agent Builder canvas, typed nodes, live preview — sunsetting Nov 2026',ms:'Studio canvas, topics + workflows designer',cl:'Console/CLI agent definition',you:'Canvas + typed node contracts on every edge',tag:'add'},
+ {cap:'Natural-language authoring',oai:'Workspace Agents in ChatGPT',ms:'Agent Builder in M365 Copilot: describe → agent',cl:'Console-based config',you:'Quick-start NL mode → ranked template proposals',tag:'add'},
+ {cap:'Own the artifact / exit ramp',oai:'Export to Agents SDK code',ms:'Copy agent from Builder → Studio',cl:'Locked to Anthropic infra + Claude models',you:'Agent-as-code manifest, GitOps, provider-agnostic runtime',tag:'have'},
+ {cap:'Connector governance',oai:'Connector Registry (admin-managed)',ms:'DLP + environment-level connector policies',cl:'MCP-native + MCP tunnels into your perimeter',you:'MCP gateway + capability policy + credential proxy',tag:'have'},
+ {cap:'Durable execution',oai:'Hosted runs',ms:'Power Automate flows',cl:'Durable sessions, event log, wake() crash recovery',you:'Temporal + event-sourced run log: resume / replay / wake',tag:'add'},
+ {cap:'Execution isolation',oai:'—',ms:'—',cl:'Sandbox decoupled from "brain"; vault outside sandbox',you:'Sandboxed tool executor; credentials via proxy only',tag:'add'},
+ {cap:'Evaluation & iteration',oai:'Evals, trace grading — sunsetting',ms:'Test sets, side-by-side version compare, transcripts → test sets',cl:'Outcomes: self-evaluate vs success criteria (preview)',you:'Eval suites + version compare + transcript harvesting + outcome-checker node',tag:'add'},
+ {cap:'FinOps',oai:'Usage-based API pricing',ms:'Usage estimator + pay-as-you-go credits',cl:'$0.08/session-hour + tokens',you:'Per-run cost attribution + pre-deploy usage estimator',tag:'add'},
+ {cap:'Publish governance',oai:'Org admin console',ms:'Admin approval required for catalog publishing',cl:'Scoped permissions',you:'Catalog publish approval gate on top of OPA',tag:'add'},
+ {cap:'Identity',oai:'—',ms:'Maker credentials (privilege-escalation risk)',cl:'Built-in OAuth, per-user auth',you:'SSO/OIDC + delegated per-user OAuth tokens from vault',tag:'add'},
+ {cap:'Interop',oai:'MCP nodes',ms:'A2A protocol GA + MCP GA',cl:'MCP-first',you:'MCP gateway + A2A connector for ERP-partner agents',tag:'add'},
+ {cap:'Reusable modules',oai:'—',ms:'Skills: create once, reuse, export',cl:'Agent Skills (folders of instructions)',you:'Skill packs in the template marketplace for OEM partners',tag:'add'}
+];
+
+function el(id){return document.getElementById(id);}
+function render(){
+  var p=el('pills');p.innerHTML='';
+  STEPS.forEach(function(s,i){
+    var b=document.createElement('button');b.className='pill';
+    b.innerHTML='<span class="num">'+String(i).padStart(2,'0')+'</span>'+s.t;
+    b.onclick=function(){sel(i);};p.appendChild(b);
+  });
+  var pl=el('planes');pl.innerHTML='';
+  PLANES.forEach(function(pn){
+    var d=document.createElement('div');d.className='plane';d.id='pl-'+pn.id;
+    var c='';pn.comps.forEach(function(cp,j){c+='<span class="chip" id="chip-'+pn.id+'-'+j+'">'+cp+'</span>';});
+    d.innerHTML='<div class="pname">'+pn.name+'<span class="tag">'+pn.tag+'</span></div><div class="chips">'+c+'</div>';
+    pl.appendChild(d);
+  });
+  var br=el('brows');br.innerHTML='';
+  BENCH.forEach(function(r){
+    var d=document.createElement('div');d.className='brow';
+    d.innerHTML='<div class="bcap">'+r.cap+'</div><div>'+r.oai+'</div><div>'+r.ms+'</div><div>'+r.cl+'</div><div>'+r.you+'<span class="btag '+(r.tag==='add'?'add':'have')+'">'+(r.tag==='add'?'add':'in spec')+'</span></div>';
+    br.appendChild(d);
+  });
+  sel(0);
+}
+function showTab(n){
+  el('view-flow').style.display=n===0?'block':'none';
+  el('view-bench').style.display=n===1?'block':'none';
+  el('tab-flow').className='tab'+(n===0?' on':'');
+  el('tab-bench').className='tab'+(n===1?' on':'');
+}
+function sel(i){
+  var s=STEPS[i];
+  var pills=el('pills').children;
+  for(var k=0;k<pills.length;k++){pills[k].className='pill'+(k===i?' on':'');}
+  var u=el('usersees');u.innerHTML='';
+  s.ui.forEach(function(it){
+    var d=document.createElement('div');d.className='uitem';
+    d.innerHTML=IC[it[0]]+'<span>'+it[1]+'</span>';u.appendChild(d);
+  });
+  PLANES.forEach(function(pn){
+    var pd=el('pl-'+pn.id);
+    var on=s.act[pn.id]!==undefined&&s.act[pn.id].length>0;
+    pd.className='plane'+(on?' on':'');
+    pn.comps.forEach(function(cp,j){
+      var ch=el('chip-'+pn.id+'-'+j);
+      ch.className='chip'+((on&&s.act[pn.id].indexOf(j)>-1)?' on':'');
+    });
+  });
+  var a=el('arts');a.innerHTML='';
+  s.arts.forEach(function(x){var d=document.createElement('span');d.className='art';d.textContent=x;a.appendChild(d);});
+  var tr=el('trace');tr.innerHTML='';
+  s.trace.forEach(function(x,j){
+    var d=document.createElement('div');d.className='trow';
+    d.innerHTML='<span class="tdot">'+(j+1)+'</span><span>'+x+'</span>';tr.appendChild(d);
+  });
+  var fb=el('flowbox');
+  if(s.flow){
+    var h='<div class="panel"><p class="ph">Template workflow preview</p><div class="flow">';
+    s.flow.forEach(function(n,j){
+      h+='<span class="fnode'+(i===6?' hl':'')+'">'+n+'</span>';
+      if(j<s.flow.length-1){h+='<span class="farr">→</span>';}
+    });
+    fb.innerHTML=h+'</div></div>';
+  }else{fb.innerHTML='';}
+}
+render();
+</script>
+</body>
+</html>

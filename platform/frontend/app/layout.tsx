@@ -1,3 +1,5 @@
+import "@xyflow/react/dist/style.css";
+
 export const metadata = {
   title: "Enterprise Agent Studio — Scheduling MVP",
   description: "Local-first, governed production scheduling workspace",
