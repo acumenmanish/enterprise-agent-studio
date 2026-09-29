@@ -39,7 +39,18 @@ class Settings(BaseSettings):
     erp_query_api_url: str | None = None
     erp_api_token: SecretStr | None = None
     credential_encryption_key: SecretStr | None = None
+    langsmith_tracing: bool = False
+    langsmith_api_key: SecretStr | None = None
+    langsmith_project: str = "enterprise-agent-studio"
     cors_allow_origins: list[str] = ["http://localhost:3002"]
+
+    @property
+    def langsmith_enabled(self) -> bool:
+        return bool(
+            self.langsmith_tracing
+            and self.langsmith_api_key
+            and self.langsmith_api_key.get_secret_value().strip()
+        )
 
     @property
     def effective_model_provider(self) -> str:

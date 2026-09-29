@@ -72,6 +72,9 @@ class AgentConfigurationUpdate(BaseModel):
     domain: Literal["printing"] = "printing"
     subdomain: Literal["production/scheduling"] = "production/scheduling"
     template_id: Literal["printing-production-scheduling"] = "printing-production-scheduling"
+    agent_name: str | None = Field(default=None, min_length=1, max_length=200)
+    purpose: str | None = Field(default=None, min_length=1, max_length=2000)
+    instructions: str | None = Field(default=None, max_length=20_000)
     system_prompt: str = Field(default="", max_length=20_000)
     business_rules: str = Field(default="", max_length=20_000)
     enabled_tools: list[str] = Field(default_factory=list, max_length=20)

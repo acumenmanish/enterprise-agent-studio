@@ -1,8 +1,43 @@
+import pytest
+
 from app.core.config import Settings
 from app.services.scheduling import load_demo_data, load_manifest
 from app.services.seed import _ensure_approved_policy_stage
 from app.services.workflow_contracts import validate_workflow_graph
 from app.services.workflow_runtime import build_schedule_workflow
+
+
+def test_workflow_observer_records_node_failure_without_leaking_error_text(monkeypatch):
+    from app.services import workflow_runtime
+
+    settings = Settings()
+    manifest = load_manifest(settings.manifest_path)
+    observed = []
+
+    def fail_optimizer(*args, **kwargs):
+        raise RuntimeError("sensitive backend details")
+
+    monkeypatch.setattr(workflow_runtime, "optimize_schedule", fail_optimizer)
+    workflow, _ = build_schedule_workflow(
+        manifest["execution_graph"],
+        manifest["tools"],
+        settings.demo_data_path,
+        node_observer=lambda node_id, node_type, status, duration_ms, summary: observed.append(
+            (node_id, node_type, status, duration_ms, summary)
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="sensitive backend details"):
+        workflow.invoke(
+            {
+                "request": {"planning_horizon_days": 5, "objective": "balanced"},
+                "policy_constraints": {"machine_blackouts": [], "material_limits": {}},
+            }
+        )
+
+    failure = next(item for item in observed if item[2] == "failed")
+    assert failure[:3] == ("cp_sat_optimizer", "optimizer", "failed")
+    assert failure[4] == {"error_type": "RuntimeError"}
 
 
 def test_manifest_workflow_executes_through_langgraph_and_uses_tool_outputs():

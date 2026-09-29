@@ -70,6 +70,9 @@ def test_agent_configuration_is_saved_to_manifest_and_context_store(
             "domain": "printing",
             "subdomain": "production/scheduling",
             "template_id": "printing-production-scheduling",
+            "agent_name": "Northstar Production Scheduler",
+            "purpose": "Build feasible weekly plans for the Northstar print plant.",
+            "instructions": "Use Northstar shift names and escalate material shortages.",
             "system_prompt": "Use plant-specific terminology.",
             "business_rules": rule_text,
             "enabled_tools": initial["enabled_tools"],
@@ -83,10 +86,22 @@ def test_agent_configuration_is_saved_to_manifest_and_context_store(
     assert saved["version"] == "0.1.1"
     loaded = configured_client.get("/api/v1/studio/agent/configuration").json()
     assert loaded["system_prompt"] == "Use plant-specific terminology."
+    assert loaded["agent_name"] == "Northstar Production Scheduler"
+    assert loaded["purpose"] == "Build feasible weekly plans for the Northstar print plant."
+    assert loaded["instructions"] == "Use Northstar shift names and escalate material shortages."
     assert loaded["documents"] == [{"name": "plant-policy.txt", "text": document_text}]
     manifest = configured_client.get("/api/v1/studio/manifest").json()
     assert (
         manifest["manifest"]["customization"]["system_prompt"] == "Use plant-specific terminology."
+    )
+    assert manifest["manifest"]["agent"]["name"] == "Northstar Production Scheduler"
+    assert (
+        manifest["manifest"]["agent"]["objective"]
+        == "Build feasible weekly plans for the Northstar print plant."
+    )
+    assert (
+        manifest["manifest"]["agent"]["instructions"]
+        == "Use Northstar shift names and escalate material shortages."
     )
     assert document_text not in manifest["manifest_yaml"]
     assert (

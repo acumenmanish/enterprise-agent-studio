@@ -93,7 +93,17 @@ type RunSummary = {
 
 type RunDetail = RunSummary & {
   request: { objective: string; planning_horizon_days: number };
-  events: { sequence: number; type: string; payload: Record<string, unknown> }[];
+  events: {
+    sequence: number;
+    type: string;
+    payload: Record<string, unknown>;
+    created_at: string | null;
+  }[];
+  observability: {
+    trace_id: string;
+    langsmith_enabled: boolean;
+    langsmith_project: string | null;
+  };
   approval: {
     id: string;
     status: string;
@@ -251,6 +261,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 export default function AgentStudio() {
   const [activeWorkspace, setActiveWorkspace] = useState<Workspace>("builder");
+  const [builderJourneyStarted, setBuilderJourneyStarted] = useState(false);
   const [authoringMode, setAuthoringMode] = useState<"quick-build" | "pro-canvas">(
     "quick-build",
   );
@@ -430,6 +441,7 @@ export default function AgentStudio() {
   };
 
   const createSchedule = async (promptText = requestText) => {
+    const startedAt = Date.now();
     setRunning(true);
     setError(null);
     try {
@@ -449,6 +461,24 @@ export default function AgentStudio() {
       const detail = cause instanceof Error ? cause.message : "Schedule run failed";
       setError(detail);
       messageApi.error(detail);
+      try {
+        const latestRuns = await api<RunSummary[]>("/runs");
+        setRuns(latestRuns);
+        const failedRun = latestRuns.find(
+          (run) =>
+            run.status === "failed" &&
+            run.created_at !== null &&
+            Date.parse(run.created_at) >= startedAt - 5000,
+        );
+        if (failedRun) {
+          setSelectedRun(await api<RunDetail>(`/runs/${failedRun.id}`));
+          setActiveWorkspace("runs");
+        }
+      } catch (refreshCause) {
+        const refreshError =
+          refreshCause instanceof Error ? refreshCause.message : "Unable to load run diagnostics";
+        messageApi.error(refreshError);
+      }
     } finally {
       setRunning(false);
     }
@@ -738,8 +768,133 @@ export default function AgentStudio() {
     },
   ];
 
+  const renderExecutionTrace = (run: RunDetail) => {
+    const traceEvents = run.events.filter(
+      (event) => event.type.startsWith("workflow.node.") || event.type.startsWith("model."),
+    );
+    return (
+      <Card
+        title="Execution trace & debugging"
+        extra={
+          <Tag color={run.observability.langsmith_enabled ? "green" : "default"}>
+            {run.observability.langsmith_enabled ? "LangSmith enabled" : "Local trace"}
+          </Tag>
+        }
+      >
+        <Space direction="vertical" size="middle" style={{ display: "flex" }}>
+          <Descriptions size="small" column={{ xs: 1, md: 2 }}>
+            <Descriptions.Item label="Studio run / trace ID">
+              <Text code copyable>{run.observability.trace_id}</Text>
+            </Descriptions.Item>
+            {run.observability.langsmith_enabled && (
+              <Descriptions.Item label="LangSmith project">
+                {run.observability.langsmith_project}
+              </Descriptions.Item>
+            )}
+          </Descriptions>
+          <Alert
+            type={run.observability.langsmith_enabled ? "warning" : "info"}
+            showIcon
+            message={
+              run.observability.langsmith_enabled
+                ? "LangGraph node inputs and outputs are sent to the configured LangSmith project."
+                : "Local node diagnostics are saved with this run. LangSmith is not configured."
+            }
+            description={
+              run.observability.langsmith_enabled
+                ? "Search LangSmith by the Studio run / trace ID above. Review your data-handling requirements before enabling external tracing."
+                : "Set LANGSMITH_TRACING=true, LANGSMITH_API_KEY, and optionally LANGSMITH_PROJECT in the backend environment to enable external traces."
+            }
+          />
+          {traceEvents.length === 0 ? (
+            <Empty description="No node or model diagnostics were recorded for this run." />
+          ) : (
+            <List
+              size="small"
+              bordered
+              dataSource={traceEvents}
+              renderItem={(event) => {
+                const payload = event.payload;
+                const status =
+                  typeof payload.status === "string"
+                    ? payload.status
+                    : event.type.slice(event.type.lastIndexOf(".") + 1);
+                const nodeName =
+                  typeof payload.node_id === "string"
+                    ? payload.node_id
+                    : event.type.replace("model.", "").replaceAll(".", " ");
+                const duration =
+                  typeof payload.duration_ms === "number"
+                    ? `${payload.duration_ms} ms`
+                    : null;
+                const details = Object.fromEntries(
+                  Object.entries(payload).filter(
+                    ([key]) =>
+                      !["node_id", "node_type", "status", "duration_ms"].includes(key),
+                  ),
+                );
+                return (
+                  <List.Item>
+                    <Space direction="vertical" size={2} style={{ width: "100%" }}>
+                      <Space wrap>
+                        <Tag color={status === "failed" ? "red" : status === "completed" ? "green" : "blue"}>
+                          {status}
+                        </Tag>
+                        <Text strong>{nodeName}</Text>
+                        {typeof payload.node_type === "string" && (
+                          <Text type="secondary">{payload.node_type}</Text>
+                        )}
+                        {duration && <Text type="secondary">{duration}</Text>}
+                        {event.created_at && (
+                          <Text type="secondary">
+                            {new Date(event.created_at).toLocaleTimeString()}
+                          </Text>
+                        )}
+                      </Space>
+                      {Object.keys(details).length > 0 && (
+                        <Text type="secondary" code>
+                          {JSON.stringify(details)}
+                        </Text>
+                      )}
+                    </Space>
+                  </List.Item>
+                );
+              }}
+            />
+          )}
+        </Space>
+      </Card>
+    );
+  };
+
   const renderSchedule = (run: RunDetail | null) => {
     if (!run?.result) {
+      if (run) {
+        return (
+          <Space direction="vertical" size="large" style={{ display: "flex" }}>
+            <Alert
+              type="error"
+              showIcon
+              message={`Run ${run.status.replaceAll("_", " ")}`}
+              description="No schedule result was produced. Use the execution trace below to locate the failing model call or workflow node."
+            />
+            {renderExecutionTrace(run)}
+            <Card title="Run event log">
+              <List
+                dataSource={run.events}
+                renderItem={(event) => (
+                  <List.Item>
+                    <Space direction="vertical" size={0}>
+                      <Text strong>{event.sequence}. {event.type}</Text>
+                      <Text type="secondary" code>{JSON.stringify(event.payload)}</Text>
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            </Card>
+          </Space>
+        );
+      }
       return (
         <Empty
           description="Generate a schedule to see a candidate plan and its constraint results."
@@ -801,6 +956,7 @@ export default function AgentStudio() {
             Solver: {result.solver_status} · Model: {result.model} · Optimizer objective: {result.objective_value}
           </Text>
         </Card>
+        {renderExecutionTrace(run)}
         {run.status === "awaiting_approval" && (
           <Card title="Planner approval required" type="inner">
             <Paragraph>
@@ -955,7 +1111,7 @@ export default function AgentStudio() {
             </Space>
           ) : activeWorkspace === "builder" ? (
             <Space direction="vertical" size="large" style={{ display: "flex" }}>
-              <Card>
+              {(authoringMode === "pro-canvas" || builderJourneyStarted) && <Card>
                 <Row gutter={[24, 20]} align="middle">
                   <Col xs={24} lg={16}>
                     <Text type="secondary">
@@ -979,7 +1135,7 @@ export default function AgentStudio() {
                     </Space>
                   </Col>
                 </Row>
-              </Card>
+              </Card>}
               <Tabs
                 activeKey={authoringMode}
                 onChange={(key) =>
@@ -991,12 +1147,16 @@ export default function AgentStudio() {
                     label: "Quick Build",
                     children: (
                       <AgentBuilderWizard
+                        started={builderJourneyStarted}
+                        onJourneyStarted={setBuilderJourneyStarted}
                         configuration={agentConfiguration}
                         modelStatus={modelStatus}
                         erpStatus={erpStatus}
                         template={{
                           name: manifest.manifest.agent.name,
+                          templateName: "Production Scheduler",
                           objective: manifest.manifest.agent.objective,
+                          instructions: manifest.manifest.agent.instructions,
                           tools: manifest.manifest.tools,
                           policies: manifest.manifest.policies,
                           graphNodes: manifest.manifest.execution_graph.nodes.length,

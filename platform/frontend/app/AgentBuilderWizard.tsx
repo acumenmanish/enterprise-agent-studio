@@ -21,6 +21,7 @@ import {
   CloudUploadOutlined,
   DatabaseOutlined,
   PlayCircleOutlined,
+  RocketOutlined,
   SaveOutlined,
 } from "@ant-design/icons";
 import { useEffect, useState } from "react";
@@ -90,6 +91,9 @@ export type BuilderConfiguration = {
   domain: string;
   subdomain: string;
   template_id: string;
+  agent_name: string;
+  purpose: string;
+  instructions: string;
   system_prompt: string;
   business_rules: string;
   enabled_tools: string[];
@@ -101,12 +105,16 @@ export type BuilderConfiguration = {
 };
 
 type Props = {
+  started: boolean;
+  onJourneyStarted: (started: boolean) => void;
   configuration: BuilderConfiguration | null;
   modelStatus: BuilderModelStatus | null;
   erpStatus: BuilderERPStatus | null;
   template: {
     name: string;
+    templateName: string;
     objective: string;
+    instructions: string;
     tools: string[];
     policies: string[];
     graphNodes: number;
@@ -122,12 +130,12 @@ type Props = {
 };
 
 const steps = [
-  "Quick start",
-  "Pick template",
-  "Choose model",
+  "Domain & template",
+  "Agent brief",
+  "Model",
   "API key",
   "Connect data",
-  "Policies & rules",
+  "Policies",
   "Create & test",
 ];
 
@@ -164,6 +172,8 @@ function fileToBase64(file: File): Promise<string> {
 }
 
 export default function AgentBuilderWizard({
+  started,
+  onJourneyStarted,
   configuration,
   modelStatus,
   erpStatus,
@@ -179,6 +189,9 @@ export default function AgentBuilderWizard({
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<BuilderConfiguration | null>(configuration);
   const [saving, setSaving] = useState(false);
+  const [agentName, setAgentName] = useState(template.name);
+  const [purpose, setPurpose] = useState(template.objective);
+  const [instructions, setInstructions] = useState(template.instructions);
   const [systemPrompt, setSystemPrompt] = useState("");
   const [businessRules, setBusinessRules] = useState("");
   const [scenariosText, setScenariosText] = useState("");
@@ -194,9 +207,9 @@ export default function AgentBuilderWizard({
   const [erpEndpoint, setERPEndpoint] = useState("");
   const [erpToken, setERPToken] = useState("");
   const [runPrompt, setRunPrompt] = useState("");
-  const [quickStartText, setQuickStartText] = useState("");
   const [domain, setDomain] = useState("printing");
   const [subdomain, setSubdomain] = useState("production/scheduling");
+  const [templateSelected, setTemplateSelected] = useState(true);
   const [enabledTools, setEnabledTools] = useState<string[]>(template.tools);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
@@ -204,15 +217,26 @@ export default function AgentBuilderWizard({
   useEffect(() => {
     if (!configuration) return;
     setDraft(configuration);
+    setAgentName(configuration.agent_name || template.name);
+    setPurpose(configuration.purpose || template.objective);
+    setInstructions(configuration.instructions || template.instructions);
     setSystemPrompt(configuration.system_prompt);
     setBusinessRules(configuration.business_rules);
-    setScenariosText(configuration.scenarios.join("\n"));
+    setScenariosText(
+      (configuration.scenarios.length
+        ? configuration.scenarios
+        : [
+            "An urgent customer order arrives and should be prioritized without violating hard constraints.",
+            "A production press becomes unavailable for one shift.",
+          ]
+      ).join("\n"),
+    );
     setDocuments(configuration.documents);
     setApprovedConstraints(configuration.approved_constraints);
     setDomain(configuration.domain);
     setSubdomain(configuration.subdomain);
     setEnabledTools(configuration.enabled_tools);
-  }, [configuration]);
+  }, [configuration, template.instructions, template.name, template.objective]);
 
   useEffect(() => {
     if (erpStatus?.endpoint) setERPEndpoint(erpStatus.endpoint);
@@ -233,6 +257,9 @@ export default function AgentBuilderWizard({
           base_version: draft.base_version,
           domain,
           subdomain,
+          agent_name: agentName,
+          purpose,
+          instructions,
           template_id: template.name === "Production Scheduling Agent"
             ? "printing-production-scheduling"
             : draft.template_id,
@@ -383,7 +410,7 @@ export default function AgentBuilderWizard({
   };
 
   const proceed = async () => {
-    if (step === 5) {
+    if (step === 1 || step === 5) {
       if (!(await saveConfiguration())) return;
     }
     setStep((current) => Math.min(current + 1, steps.length - 1));
@@ -396,24 +423,54 @@ export default function AgentBuilderWizard({
   return (
     <Space direction="vertical" size="large" style={{ display: "flex" }}>
       {contextHolder}
-      <Card title="Build your production scheduling agent">
-        <Steps current={step} responsive onChange={setStep} items={steps.map((title) => ({ title }))} />
-      </Card>
+      {!started ? (
+        <Card
+          style={{ maxWidth: 880, margin: "32px auto", textAlign: "center" }}
+          styles={{ body: { padding: 40 } }}
+        >
+          <Tag color="blue">ENTERPRISE AGENT STUDIO</Tag>
+          <Title level={2} style={{ marginTop: 20 }}>
+            Welcome. Let’s build your production agent.
+          </Title>
+          <Paragraph type="secondary" style={{ maxWidth: 620, margin: "0 auto 28px" }}>
+            Start with a proven manufacturing template, review its purpose and
+            instructions, then tailor the model, data, business policies, and
+            workflow to your operation.
+          </Paragraph>
+          <Button
+            type="primary"
+            size="large"
+            icon={<RocketOutlined />}
+            onClick={() => onJourneyStarted(true)}
+          >
+            Start building your agent
+          </Button>
+          <div style={{ marginTop: 24 }}>
+            <Text type="secondary">
+              Guided setup · Production Scheduler · Your settings remain editable
+            </Text>
+          </div>
+        </Card>
+      ) : (
+        <>
+          <Card
+            title="Create your production scheduling agent"
+            extra={<Text type="secondary">Step {step + 1} of {steps.length}</Text>}
+          >
+            <Steps
+              current={step}
+              responsive
+              onChange={setStep}
+              items={steps.map((title) => ({ title }))}
+            />
+          </Card>
 
       {step === 0 && (
-        <Card title="0 · Quick start">
-          <Paragraph>
-            Describe your scheduling scenario if you want to test it later. The
-            Studio starts from a domain template; it does not generate an
-            unconstrained generic agent.
+        <Card title="1 · Select your domain, subdomain, and agent template">
+          <Paragraph type="secondary">
+            Choose the business area and the prebuilt agent that best matches
+            the work you want to improve.
           </Paragraph>
-          <Input.TextArea
-            rows={3}
-            maxLength={1000}
-            value={quickStartText}
-            onChange={(event) => setQuickStartText(event.target.value)}
-            placeholder="e.g. Build next week's press schedule and prioritize urgent carton orders."
-          />
           <Row gutter={16} style={{ marginTop: 16 }}>
             <Col xs={24} md={12}>
               <Text strong>Domain</Text>
@@ -422,8 +479,7 @@ export default function AgentBuilderWizard({
                 onChange={setDomain}
                 style={{ width: "100%", marginTop: 8 }}
                 options={[
-                  { value: "printing", label: "Printing manufacturing" },
-                  { value: "packaging", label: "Packaging (template coming later)", disabled: true },
+                  { value: "printing", label: "Manufacturing" },
                 ]}
               />
             </Col>
@@ -434,48 +490,117 @@ export default function AgentBuilderWizard({
                 onChange={setSubdomain}
                 style={{ width: "100%", marginTop: 8 }}
                 options={[
-                  { value: "production/scheduling", label: "Production · Scheduling" },
-                  { value: "production/quality", label: "Production · Quality (template coming later)", disabled: true },
+                  { value: "production/scheduling", label: "Printing & Packaging" },
                 ]}
               />
             </Col>
           </Row>
+          <Text strong style={{ display: "block", margin: "24px 0 10px" }}>
+            Choose an agent template
+          </Text>
+          <Card
+            hoverable
+            onClick={() => setTemplateSelected(true)}
+            style={{
+              borderColor: templateSelected ? "#1677ff" : undefined,
+              background: templateSelected ? "#f0f7ff" : undefined,
+            }}
+            title={
+              <Space>
+                <span>{template.templateName}</span>
+                <Tag color="blue">Recommended</Tag>
+                {templateSelected && <Tag color="green">Selected</Tag>}
+              </Space>
+            }
+            extra={<Tag>{template.version}</Tag>}
+          >
+            <Paragraph>{template.objective}</Paragraph>
+            <Space wrap>
+              <Tag>Manufacturing</Tag>
+              <Tag>Printing & Packaging</Tag>
+              <Tag>Production Scheduling</Tag>
+              <Tag>{template.graphNodes} workflow stages</Tag>
+            </Space>
+          </Card>
           <Alert
             type="info"
             showIcon
-            message="The local MVP has one implemented domain template."
-            description="Printing → Production → Scheduling is available now. Other domain branches remain visible as future template slots rather than empty fake agents."
+            message="Starting with a domain-specific template"
+            description="The Production Scheduler comes with a tested optimizer, workflow, instructions, and approval controls. You can review and edit its agent brief in the next step."
             style={{ marginTop: 16 }}
           />
         </Card>
       )}
 
       {step === 1 && (
-        <Card title="1 · Choose a prebuilt template">
-          <Card
-            type="inner"
-            title={<Space>{template.name}<Tag color="blue">Recommended</Tag></Space>}
-            extra={<Tag>{template.version}</Tag>}
-          >
-            <Paragraph>{template.objective}</Paragraph>
+        <Card title="2 · Review and personalize your agent">
+          <Alert
+            type="success"
+            showIcon
+            message="Your template is ready to customize"
+            description="We’ve prefilled this agent from the Production Scheduler template. Review its name, purpose, operating instructions, and example scenarios. Your changes are saved as a new version."
+            style={{ marginBottom: 20 }}
+          />
+          <Space direction="vertical" size="large" style={{ display: "flex" }}>
+            <div>
+              <Text strong>Agent name</Text>
+              <Input
+                value={agentName}
+                maxLength={200}
+                onChange={(event) => setAgentName(event.target.value)}
+                style={{ marginTop: 8 }}
+              />
+            </div>
+            <div>
+              <Text strong>Purpose</Text>
+              <Input.TextArea
+                rows={3}
+                maxLength={2000}
+                value={purpose}
+                onChange={(event) => setPurpose(event.target.value)}
+                style={{ marginTop: 8 }}
+              />
+            </div>
+            <div>
+              <Text strong>Instructions</Text>
+              <Input.TextArea
+                rows={6}
+                maxLength={20_000}
+                value={instructions}
+                onChange={(event) => setInstructions(event.target.value)}
+                style={{ marginTop: 8 }}
+              />
+              <Text type="secondary">
+                Hard optimizer constraints and the planner approval gate remain
+                enforced regardless of instruction edits.
+              </Text>
+            </div>
+            <div>
+              <Text strong>Template scenarios (one per line)</Text>
+              <Paragraph type="secondary">
+                These are example situations to help explain the agent and seed
+                your evaluation planning. You can edit them now; they are not
+                automatically treated as optimizer constraints.
+              </Paragraph>
+              <Input.TextArea
+                rows={4}
+                maxLength={20_000}
+                value={scenariosText}
+                onChange={(event) => setScenariosText(event.target.value)}
+              />
+            </div>
             <Space wrap>
-              <Tag>Printing</Tag>
-              <Tag>Production / Scheduling</Tag>
-              <Tag>{template.graphNodes} typed workflow nodes</Tag>
-              <Tag>{template.tools.length} template tools</Tag>
-              <Tag>{template.policies.length} policies</Tag>
+              <Tag>Printing & Packaging</Tag>
+              <Tag>{template.tools.length} template capabilities</Tag>
+              <Tag>{template.policies.length} safety policies</Tag>
+              <Tag>{template.graphNodes} validated workflow stages</Tag>
             </Space>
-            <Paragraph style={{ marginTop: 16 }}>
-              The template includes its system instructions, deterministic
-              optimizer, validation stage, approval gate, and data capability
-              declarations. Your copy remains versioned as agent-as-code.
-            </Paragraph>
-          </Card>
+          </Space>
         </Card>
       )}
 
       {step === 2 && (
-        <Card title="2 · Choose the inference model">
+        <Card title="3 · Choose the inference model">
           <Card type="inner" title="Anthropic Claude" extra={<Tag color="green">Default model</Tag>}>
             <Paragraph>
               The backend uses the configured Anthropic key and pinned default
@@ -503,7 +628,7 @@ export default function AgentBuilderWizard({
       )}
 
       {step === 3 && (
-        <Card title="3 · API key">
+        <Card title="4 · API key">
           <Alert
             type="success"
             showIcon
@@ -552,7 +677,7 @@ export default function AgentBuilderWizard({
       )}
 
       {step === 4 && (
-        <Card title="4 · Connect production data">
+        <Card title="5 · Connect production data">
           <Space direction="vertical" size="middle" style={{ display: "flex", marginBottom: 20 }}>
             <div>
               <Text strong>Smart Schedule Query API endpoint</Text>
@@ -654,7 +779,7 @@ export default function AgentBuilderWizard({
       )}
 
       {step === 5 && (
-        <Card title="5 · Add your system prompt, policies, rules, and scenarios">
+        <Card title="6 · Add your system prompt, policies, and rules">
           <Space direction="vertical" size="middle" style={{ display: "flex" }}>
             <div>
               <Text strong>Customize the template system prompt</Text>
@@ -675,17 +800,6 @@ export default function AgentBuilderWizard({
                 value={businessRules}
                 onChange={(event) => setBusinessRules(event.target.value)}
                 placeholder="e.g. Prioritize pharmaceutical jobs; avoid press changeovers after 18:00."
-                style={{ marginTop: 8 }}
-              />
-            </div>
-            <div>
-              <Text strong>Scenario examples (reference cases; test them in Evaluation Suite)</Text>
-              <Input.TextArea
-                rows={3}
-                maxLength={20_000}
-                value={scenariosText}
-                onChange={(event) => setScenariosText(event.target.value)}
-                placeholder={"Urgent order arrives after the schedule is generated.\nA press is unavailable for one shift."}
                 style={{ marginTop: 8 }}
               />
             </div>
@@ -800,7 +914,7 @@ export default function AgentBuilderWizard({
       )}
 
       {step === 6 && (
-        <Card title="6 · Save, edit the Pro Canvas, and test your agent">
+        <Card title="7 · Save, edit the Pro Canvas, and test your agent">
           <Alert
             type="success"
             showIcon
@@ -813,7 +927,7 @@ export default function AgentBuilderWizard({
             <Input.TextArea
               rows={3}
               maxLength={1000}
-              value={runPrompt || quickStartText}
+              value={runPrompt}
               onChange={(event) => setRunPrompt(event.target.value)}
               placeholder="Describe the production schedule to test."
             />
@@ -829,8 +943,8 @@ export default function AgentBuilderWizard({
                 type="primary"
                 icon={<PlayCircleOutlined />}
                 loading={running}
-                disabled={!runPrompt.trim() && !quickStartText.trim()}
-                onClick={() => onTestRun(runPrompt || quickStartText)}
+                disabled={!runPrompt.trim()}
+                onClick={() => onTestRun(runPrompt)}
               >
                 Run test
               </Button>
@@ -846,20 +960,42 @@ export default function AgentBuilderWizard({
 
       <Card>
         <Space style={{ display: "flex", justifyContent: "space-between" }} wrap>
-          <Button disabled={step === 0} onClick={() => setStep((current) => Math.max(0, current - 1))}>
+          <Button
+            onClick={() => {
+              if (step === 0) {
+                onJourneyStarted(false);
+              }
+              else setStep((current) => Math.max(0, current - 1));
+            }}
+          >
             Back
           </Button>
           {step < steps.length - 1 ? (
-            <Button type="primary" onClick={() => void proceed()}>
-              {step === 5 ? "Save and continue" : "Continue"}
+            <Button
+              type="primary"
+              disabled={
+                (step === 0 && !templateSelected) ||
+                (step === 1 && (!agentName.trim() || !purpose.trim()))
+              }
+              onClick={() => void proceed()}
+            >
+              {step === 1 || step === 5 ? "Save and continue" : "Continue"}
             </Button>
           ) : (
-            <Button icon={<CheckCircleOutlined />} onClick={() => setStep(0)}>
+            <Button
+              icon={<CheckCircleOutlined />}
+              onClick={() => {
+                onJourneyStarted(false);
+                setStep(0);
+              }}
+            >
               Start another setup
             </Button>
           )}
         </Space>
       </Card>
+        </>
+      )}
     </Space>
   );
 }

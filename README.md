@@ -63,6 +63,32 @@ override provider detection. Compose passes credentials only to the backend.
 Keys never enter the browser or agent manifest. Runs report a provider error
 instead of silently falling back when a configured model call fails.
 
+## Run observability and LangSmith
+
+Every scheduling run stores a local event trace in Run History, including each
+LangGraph node's start, completion or failure, elapsed time, and a privacy-safe
+output summary. Model request interpretation and schedule explanation are also
+timed locally. A Studio run ID is included in the detail view for correlation.
+
+LangSmith tracing is optional and disabled by default. To send LangGraph node
+traces to a LangSmith project, set the following in the ignored root `.env` and
+rebuild/restart the backend:
+
+```dotenv
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your-langsmith-api-key
+LANGSMITH_PROJECT=enterprise-agent-studio
+```
+
+LangGraph traces can include workflow inputs and outputs, which may contain
+planner requests, scheduling data, and approved policy constraints. Only enable
+external tracing when the data is permitted to leave the local environment.
+API keys used to call the model are not included in trace metadata. The UI shows
+whether LangSmith was enabled for each run and its trace ID; search that ID in
+the configured LangSmith project. Direct model-gateway HTTP calls are not
+LangSmith spans in this MVP; their timing and failures remain visible in the
+local run diagnostics.
+
 To let a Studio user replace the default with an encrypted per-agent override,
 generate and add a Fernet key to `.env`:
 

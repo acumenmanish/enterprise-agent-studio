@@ -1,6 +1,8 @@
 import hashlib
 import uuid
 from datetime import UTC, datetime
+from threading import Lock
+from time import perf_counter
 from typing import Any
 
 import structlog
@@ -132,6 +134,9 @@ def _agent_configuration(
         "template_id": manifest.get("quick_build_defaults", {}).get(
             "template_id", "printing-production-scheduling"
         ),
+        "agent_name": manifest["agent"]["name"],
+        "purpose": manifest["agent"]["objective"],
+        "instructions": manifest["agent"]["instructions"],
         "system_prompt": "",
         "business_rules": "",
         "enabled_tools": manifest.get("tools", []),
@@ -344,7 +349,25 @@ def save_agent_configuration(
 
     record, _ = _agent_configuration(db, agent.tenant_id, agent.id, current_manifest)
     updated_manifest = dict(current_manifest)
-    updated_manifest["customization"] = body.model_dump(exclude={"base_version", "documents"})
+    updated_manifest["customization"] = body.model_dump(
+        exclude={
+            "base_version",
+            "documents",
+            "agent_name",
+            "purpose",
+            "instructions",
+        }
+    )
+    updated_manifest["agent"] = {
+        **current_manifest["agent"],
+        "name": body.agent_name or current_manifest["agent"]["name"],
+        "objective": body.purpose or current_manifest["agent"]["objective"],
+        "instructions": (
+            body.instructions
+            if body.instructions is not None
+            else current_manifest["agent"]["instructions"]
+        ),
+    }
     updated_manifest["customization"]["knowledge_sources"] = [
         {
             "name": document.name,
@@ -355,7 +378,7 @@ def save_agent_configuration(
     updated_manifest["tools"] = body.enabled_tools
     major, minor, patch = (int(part) for part in current_manifest["agent"]["version"].split("."))
     updated_manifest["agent"] = {
-        **current_manifest["agent"],
+        **updated_manifest["agent"],
         "version": f"{major}.{minor}.{patch + 1}",
     }
     manifest_yaml = yaml.safe_dump(updated_manifest, sort_keys=False)
@@ -661,11 +684,46 @@ async def create_schedule_run(
                 + ", ".join(sorted(missing_tools))
             ),
         )
+
+    run: AgentRun | None = None
+    node_observations: list[tuple[str, dict[str, Any]]] = []
+    node_observations_lock = Lock()
+
+    def observe_node(
+        node_id: str,
+        node_type: str,
+        status: str,
+        duration_ms: int,
+        summary: dict[str, Any],
+    ) -> None:
+        payload: dict[str, Any] = {
+            "node_id": node_id,
+            "node_type": node_type,
+            "status": status,
+        }
+        if status != "started":
+            payload["duration_ms"] = duration_ms
+        payload.update(summary)
+        with node_observations_lock:
+            node_observations.append((f"workflow.node.{status}", payload))
+
+    def persist_node_observations() -> None:
+        if run is None:
+            raise RuntimeError("Workflow node events cannot be saved before the run exists.")
+        with node_observations_lock:
+            observations = node_observations.copy()
+            node_observations.clear()
+        for event_type, payload in observations:
+            append_event(db, run, event_type, payload)
+        if observations:
+            db.commit()
+
     try:
         workflow, workflow_order = build_schedule_workflow(
             agent.manifest["execution_graph"],
             configuration["enabled_tools"],
             settings.demo_data_path,
+            node_observer=observe_node,
         )
     except WorkflowExecutionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -696,6 +754,34 @@ async def create_schedule_run(
                     "structured objective."
                 ),
             )
+    run = AgentRun(
+        id=str(uuid.uuid4()),
+        tenant_id=settings.default_tenant_id,
+        agent_id=agent.id,
+        status="running",
+        request=effective_request.model_dump(),
+        result=None,
+    )
+    db.add(run)
+    append_event(
+        db,
+        run,
+        "run.started",
+        {
+            "request": effective_request.model_dump(),
+            "trace_id": run.id,
+            "langsmith_enabled": settings.langsmith_enabled,
+            "langsmith_project": settings.langsmith_project
+            if settings.langsmith_enabled
+            else None,
+        },
+    )
+    db.commit()
+
+    if schedule_request.request_text:
+        started_at = perf_counter()
+        append_event(db, run, "model.request_interpretation.started", {})
+        db.commit()
         try:
             intent = await interpret_scheduling_request(
                 schedule_request.request_text,
@@ -704,6 +790,20 @@ async def create_schedule_run(
                 api_key_override=key_override,
             )
         except Exception as exc:
+            append_event(
+                db,
+                run,
+                "model.request_interpretation.failed",
+                {
+                    "duration_ms": round((perf_counter() - started_at) * 1000),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            run.status = "failed"
+            append_event(
+                db, run, "run.failed", {"reason": "request_interpretation_failed"}
+            )
+            db.commit()
             log.exception("studio.intent_interpretation_failed", error_type=type(exc).__name__)
             raise HTTPException(
                 status_code=502,
@@ -714,18 +814,20 @@ async def create_schedule_run(
             objective=intent.objective,
             request_text=schedule_request.request_text,
         )
-
-    run = AgentRun(
-        id=str(uuid.uuid4()),
-        tenant_id=settings.default_tenant_id,
-        agent_id=agent.id,
-        status="running",
-        request=effective_request.model_dump(),
-        result=None,
-    )
-    db.add(run)
-    append_event(db, run, "run.started", {"request": effective_request.model_dump()})
-    db.commit()
+        run.request = effective_request.model_dump()
+        append_event(
+            db,
+            run,
+            "model.request_interpretation.completed",
+            {
+                "duration_ms": round((perf_counter() - started_at) * 1000),
+                "provider": settings.effective_model_provider,
+                "model": settings.effective_model_name,
+                "objective": intent.objective,
+                "planning_horizon_days": intent.planning_horizon_days,
+            },
+        )
+        db.commit()
 
     try:
         append_event(db, run, "workflow.started", {"node_order": workflow_order})
@@ -735,8 +837,19 @@ async def create_schedule_run(
             {
                 "request": effective_request.model_dump(),
                 "policy_constraints": approved_constraints,
-            }
+            },
+            config={
+                "run_id": uuid.UUID(run.id),
+                "run_name": f"{agent.name} · {run.id[:8]}",
+                "tags": ["agent-studio", "production-scheduling"],
+                "metadata": {
+                    "studio_run_id": run.id,
+                    "agent_id": agent.id,
+                    "agent_version": agent.version,
+                },
+            },
         )
+        persist_node_observations()
         data = state["data"]
         append_event(
             db,
@@ -757,17 +870,47 @@ async def create_schedule_run(
                 "Workflow did not reach outcome validation and planner approval."
             )
         append_event(db, run, "workflow.completed", {"node_order": workflow_order})
-        result["explanation"] = await explain_schedule(
-            result,
-            settings,
-            system_prompt=compose_agent_system_prompt(
-                agent.manifest,
-                configuration,
-                retrieved["context"],
-                "Explain the schedule using only the supplied metrics and validated schedule. "
-                "Do not claim text context changes deterministic optimizer constraints.",
-            ),
-            api_key_override=key_override,
+        explanation_started_at = perf_counter()
+        append_event(db, run, "model.schedule_explanation.started", {})
+        db.commit()
+        try:
+            result["explanation"] = await explain_schedule(
+                result,
+                settings,
+                system_prompt=compose_agent_system_prompt(
+                    agent.manifest,
+                    configuration,
+                    retrieved["context"],
+                    "Explain the schedule using only the supplied metrics and validated schedule. "
+                    "Do not claim text context changes deterministic optimizer constraints.",
+                ),
+                api_key_override=key_override,
+            )
+        except Exception as exc:
+            append_event(
+                db,
+                run,
+                "model.schedule_explanation.failed",
+                {
+                    "duration_ms": round((perf_counter() - explanation_started_at) * 1000),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            db.commit()
+            raise
+        append_event(
+            db,
+            run,
+            "model.schedule_explanation.completed",
+            {
+                "duration_ms": round((perf_counter() - explanation_started_at) * 1000),
+                "provider": settings.effective_model_provider
+                if settings.model_configured or key_override is not None
+                else "local",
+                "model": settings.effective_model_name
+                if settings.model_configured or key_override is not None
+                else "deterministic-local",
+            },
         )
         result["model"] = (
             settings.effective_model_name
@@ -804,6 +947,7 @@ async def create_schedule_run(
         )
         db.commit()
     except SchedulingInputError as exc:
+        persist_node_observations()
         db.rollback()
         failed_run = db.get(AgentRun, run.id)
         if failed_run is not None:
@@ -812,6 +956,7 @@ async def create_schedule_run(
             db.commit()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
+        persist_node_observations()
         db.rollback()
         failed_run = db.get(AgentRun, run.id)
         if failed_run is not None:
@@ -858,18 +1003,29 @@ def get_run(run_id: str, request: Request, db: Session = Depends(get_db)) -> dic
         select(RunEvent).where(RunEvent.run_id == run.id).order_by(RunEvent.sequence)
     )
     approval = db.scalar(select(Approval).where(Approval.run_id == run.id))
+    serialized_events = [
+        {
+            "sequence": event.sequence,
+            "type": event.event_type,
+            "payload": event.payload,
+            "created_at": event.created_at.isoformat() if event.created_at else None,
+        }
+        for event in events
+    ]
+    run_started = next(
+        (event for event in serialized_events if event["type"] == "run.started"),
+        None,
+    )
+    start_payload = run_started["payload"] if run_started else {}
     return {
         **_serialize_run(run),
         "request": run.request,
-        "events": [
-            {
-                "sequence": event.sequence,
-                "type": event.event_type,
-                "payload": event.payload,
-                "created_at": event.created_at.isoformat() if event.created_at else None,
-            }
-            for event in events
-        ],
+        "events": serialized_events,
+        "observability": {
+            "trace_id": start_payload.get("trace_id", run.id),
+            "langsmith_enabled": start_payload.get("langsmith_enabled", False),
+            "langsmith_project": start_payload.get("langsmith_project"),
+        },
         "approval": (
             {
                 "id": approval.id,

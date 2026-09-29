@@ -15,6 +15,15 @@ def client(tmp_path) -> Generator[TestClient, None, None]:
         yield test_client
 
 
+def test_langsmith_tracing_requires_explicit_opt_in_and_api_key():
+    assert Settings().langsmith_enabled is False
+    assert Settings(langsmith_tracing=True).langsmith_enabled is False
+    assert (
+        Settings(langsmith_tracing=True, langsmith_api_key="test-only").langsmith_enabled
+        is True
+    )
+
+
 def test_schedule_requires_approval_and_records_ordered_events(client: TestClient):
     response = client.post(
         "/api/v1/studio/schedule/run",
@@ -33,9 +42,24 @@ def test_schedule_requires_approval_and_records_ordered_events(client: TestClien
     assert run.status_code == 200
     body = run.json()
     assert body["approval"]["status"] == "pending"
+    assert body["observability"]["trace_id"] == run_id
+    assert body["observability"]["langsmith_enabled"] is False
     assert [event["sequence"] for event in body["events"]] == list(
         range(1, len(body["events"]) + 1)
     )
+    node_events = [
+        event for event in body["events"] if event["type"].startswith("workflow.node.")
+    ]
+    completed_nodes = [
+        event for event in node_events if event["payload"]["status"] == "completed"
+    ]
+    assert completed_nodes
+    context_summary = next(
+        event["payload"] for event in completed_nodes if event["payload"]["node_type"] == "context"
+    )
+    assert context_summary["orders"] > 0
+    assert "data" not in context_summary
+    assert all("duration_ms" in event["payload"] for event in completed_nodes)
     assert body["events"][-1]["type"] == "approval.requested"
 
     approved = client.post(
@@ -61,6 +85,30 @@ def test_schedule_request_rejects_horizon_out_of_range(client: TestClient):
         json={"planning_horizon_days": 0},
     )
     assert response.status_code == 422
+
+
+def test_failed_schedule_run_keeps_node_diagnostics(client: TestClient, monkeypatch):
+    from app.services import workflow_runtime
+
+    def fail_optimizer(*args, **kwargs):
+        raise RuntimeError("private optimizer detail")
+
+    monkeypatch.setattr(workflow_runtime, "optimize_schedule", fail_optimizer)
+    response = client.post(
+        "/api/v1/studio/schedule/run",
+        json={"planning_horizon_days": 5, "objective": "balanced"},
+    )
+
+    assert response.status_code == 502
+    failed_run = client.get("/api/v1/studio/runs").json()[0]
+    detail = client.get(f"/api/v1/studio/runs/{failed_run['id']}").json()
+    failure = next(
+        event for event in detail["events"] if event["type"] == "workflow.node.failed"
+    )
+    assert detail["status"] == "failed"
+    assert failure["payload"]["node_id"] == "cp_sat_optimizer"
+    assert failure["payload"]["error_type"] == "RuntimeError"
+    assert "private optimizer detail" not in str(failure["payload"])
 
 
 def test_manifest_exposes_the_same_validated_graph_used_for_authoring(client: TestClient):

@@ -1,4 +1,6 @@
 import heapq
+from collections.abc import Callable
+from time import perf_counter
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -25,6 +27,40 @@ class ScheduleWorkflowState(TypedDict, total=False):
     result: dict[str, Any]
     outcome_checked: bool
     approval_required: bool
+
+
+NodeObserver = Callable[[str, str, str, int, dict[str, Any]], None]
+
+
+def _summarize_node_output(node_type: str, output: dict[str, Any]) -> dict[str, Any]:
+    if node_type == "context":
+        data = output.get("data", {})
+        return {
+            "orders": len(data.get("orders", [])),
+            "machines": len(data.get("machines", [])),
+            "materials": len(data.get("materials", [])),
+        }
+    if node_type == "policy":
+        constraints = output.get("policy_constraints", {})
+        return {
+            "machine_blackouts": len(constraints.get("machine_blackouts", [])),
+            "material_limits": len(constraints.get("material_limits", {})),
+        }
+    if node_type == "optimizer":
+        result = output.get("result", {})
+        return {
+            "solver_status": result.get("solver_status"),
+            "metrics": result.get("metrics", {}),
+            "validation_passed": result.get("validation", {}).get("passed"),
+            "scheduled_jobs": len(result.get("schedule", [])),
+        }
+    if node_type == "tool":
+        return {key: len(value) for key, value in output.items() if isinstance(value, list)}
+    return {
+        key: value
+        for key, value in output.items()
+        if isinstance(value, bool) or value is None
+    }
 
 
 def _execution_order(graph: dict[str, Any]) -> list[str]:
@@ -54,6 +90,7 @@ def build_schedule_workflow(
     graph: dict[str, Any],
     enabled_tools: list[str],
     demo_data_path,
+    node_observer: NodeObserver | None = None,
 ):
     nodes = graph["nodes"]
     nodes_by_id = {node["id"]: node for node in nodes}
@@ -186,7 +223,44 @@ def build_schedule_workflow(
 
     workflow = StateGraph(ScheduleWorkflowState)
     for node in nodes:
-        workflow.add_node(node["id"], handler_for(node))
+        handler = handler_for(node)
+        node_id = node["id"]
+        node_type = node["type"]
+
+        def instrument(
+            node_handler: Callable[[ScheduleWorkflowState], dict[str, Any]],
+            observed_node_id: str,
+            observed_node_type: str,
+        ):
+            def run_node(state: ScheduleWorkflowState) -> dict[str, Any]:
+                started_at = perf_counter()
+                if node_observer:
+                    node_observer(observed_node_id, observed_node_type, "started", 0, {})
+                try:
+                    output = node_handler(state)
+                except Exception as exc:
+                    if node_observer:
+                        node_observer(
+                            observed_node_id,
+                            observed_node_type,
+                            "failed",
+                            round((perf_counter() - started_at) * 1000),
+                            {"error_type": type(exc).__name__},
+                        )
+                    raise
+                if node_observer:
+                    node_observer(
+                        observed_node_id,
+                        observed_node_type,
+                        "completed",
+                        round((perf_counter() - started_at) * 1000),
+                        _summarize_node_output(observed_node_type, output),
+                    )
+                return output
+
+            return run_node
+
+        workflow.add_node(node_id, instrument(handler, node_id, node_type))
 
     incoming = {node["id"]: 0 for node in nodes}
     outgoing = {node["id"]: 0 for node in nodes}
